@@ -803,7 +803,25 @@ J700_26A428_NO_CLPC_TCG = replace(
                         '0bcc48d705aa3296189378f5d199cfec5d5f1a18a77a7e84cdb6a80c19c140be'),
     ),
 )
+# The TCG board for the BaseSystem route: the A16's BaseSystem board
+# (bootfb-xars-uniform-no-audio) plus the TCG secure-repair withdrawal.
+# The no-clpc-tcg board has only the SEP mailbox transport. On QEMU
+# (p4r4..p4r6) bs-early-tasks, run by rc.cdrom.sh, waits forever for its
+# BootPolicy os-type reply right after "Sucessfully notified ACM TRM";
+# launchd never leaves its boot tasks and exactly three processes exist
+# (launchd, bash, bs-early-tasks). With only the SEP preload services (p4r8)
+# launchd starts the daemons and the next stop is the A16's own CPSN panic
+# ("!booted" in AppleSEPUserClient::DispatchUserClientLynxGetCPSN), which
+# xars_refusal answers. USB/DP-PHY, audio and uniform clusters follow the A16
+# board for the same reasons (absent-IPA stops, idle P cores).
+SECURE_REPAIR_TCG = J700_26A428_NO_CLPC_TCG.deferred_subtrees[-1]
+J700_26A428_BASESYSTEM_TCG = replace(
+    J700_26A428_BOOTFB_XARS_UNIFORM_NO_AUDIO,
+    name='j700ap-26A428-bootfb-xars-uniform-no-audio-tcg',
+    deferred_subtrees=J700_26A428_BOOTFB_XARS_UNIFORM_NO_AUDIO.deferred_subtrees + (SECURE_REPAIR_TCG,),
+)
 PROFILES = {p.name: p for p in (J700_26A428, J700_26A428_NO_CLPC, J700_26A428_NO_CLPC_TCG,
+                               J700_26A428_BASESYSTEM_TCG,
                                J700_26A428_SEP_PRELOAD, J700_26A428_BOOTFB,
                                J700_26A428_BOOTFB_NUB, J700_26A428_BOOTFB_NO_USB,
                                J700_26A428_BOOTFB_RTC, J700_26A428_BOOTFB_XARS,
