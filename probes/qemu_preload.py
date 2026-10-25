@@ -30,7 +30,10 @@ BLOB = 'qemu-chunks.bin'
 EFI_BLOB = '\\Snapintosh\\qemu-chunks.bin'
 MANIFEST = 'q1n1-preload.bin'
 INDEX = 'qemu-chunks.json'           # host side, beside the ESP, not on it
-MIN_CHUNK = 64 << 10                 # small chunks cost little over the UART
+# 4 KiB: below that a chunk is cheaper over the UART than as its own record.
+# At 64 KiB the 835 small chunks of a large layout (13 MiB, mostly 16 KiB
+# table pages) still took 50-90 s over the proxy (snaplab run14-16).
+MIN_CHUNK = 4 << 10
 COPY_STEP = 8 << 20                  # same bound as q1n1 preload.copy_cached
 # Set by apply() when the resident cache missed chunks; Qemu.__exit__ writes it
 # after QEMU has stopped, so vvfat never sees the ESP change under it.
