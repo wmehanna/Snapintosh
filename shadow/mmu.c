@@ -20,13 +20,19 @@ static uint32_t level_shift(uint32_t granule_shift, uint32_t level)
 
 uint64_t mmu_level_size(uint32_t granule_shift, uint32_t level)
 {
-    return 1UL << level_shift(granule_shift, level);
+    if (granule_shift < 12 || granule_shift > 16 || level > 3) return 0;
+    uint32_t shift = level_shift(granule_shift, level);
+    if (shift >= 64) return 0;
+    return 1ULL << shift;
 }
 
 uint32_t mmu_index(uint32_t granule_shift, uint32_t level, uint64_t va)
 {
+    if (granule_shift < 12 || granule_shift > 16 || level > 3) return 0;
     uint32_t bits = index_bits(granule_shift);
-    return (uint32_t)((va >> level_shift(granule_shift, level)) & ((1UL << bits) - 1));
+    uint32_t shift = level_shift(granule_shift, level);
+    if (shift >= 64) return 0;
+    return (uint32_t)((va >> shift) & ((1ULL << bits) - 1));
 }
 
 int mmu_block_allowed(uint32_t granule_shift, uint32_t level)
