@@ -12,6 +12,7 @@ link automatically, or select a serial path or udp://enN with --device.
 import argparse
 import os
 import runpy
+import shlex
 import shutil
 import struct
 import subprocess
@@ -48,6 +49,7 @@ FIRMWARE = os.environ.get('SNAP_EDK2_CODE', '/opt/homebrew/share/qemu/edk2-aarch
 QEMU = os.environ.get('SNAP_QEMU', 'qemu-system-aarch64')
 QEMU_CPU = os.environ.get('SNAP_QEMU_CPU', 'max')
 QEMU_MEM = os.environ.get('SNAP_QEMU_MEM', '4G')
+# SNAP_QEMU_ARGS: extra options appended to the QEMU command (diagnosis).
 
 
 class Qemu:
@@ -89,7 +91,10 @@ class Qemu:
              '-device', 'ramfb',
              '-display', 'none', '-monitor', 'none', '-nic', 'none', '-no-reboot',
              '-chardev', f'socket,id=s,path={self.sock},server=on,wait=off',
-             '-serial', 'chardev:s'],
+             '-serial', 'chardev:s',
+             # Extra QEMU options for diagnosis, e.g. an HMP monitor socket to
+             # read registers and memory while a P_CALL hangs.
+             *shlex.split(os.environ.get('SNAP_QEMU_ARGS', ''))],
             stdout=subprocess.DEVNULL, stderr=open(self.log, 'w'))
         return self.sock
 
