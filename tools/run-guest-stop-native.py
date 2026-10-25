@@ -249,7 +249,7 @@ def main():
                     all(s==(0 if m==0 else 1) for m,s in states.items())):
                 guard.freeze('idle claim contradicted: require boot CPU0 ON and 17 peers OFF');raise RuntimeError(guard.reason)
             session=secrets.randbits(64) or 1;nonce=secrets.randbits(64) or 1
-            req=struct.pack('<26Q',probe['MAGIC'],1,entry,state,session,nonce,*([0]*20))
+            req=struct.pack('<30Q',probe['MAGIC'],1,entry,state,session,nonce,*([0]*24))
             artifact('request.bin',req)
             record.update(session=session,nonce=nonce,addresses=dict(code=code,result=result,request=request,work=work));save()
             proxy.writemem(code,blob);need(proxy.readmem(code,len(blob))==blob,'code readback mismatch');proxy.flush_code(code,len(blob))

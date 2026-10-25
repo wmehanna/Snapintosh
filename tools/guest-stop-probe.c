@@ -8,6 +8,8 @@ struct guest_stop_request {
     uint64_t magic, mode, host_call, host_state, session, nonce;
     struct secondary_config cpus;
 };
+/* tools/qualify-guest-stop.py and run-guest-stop-native.py pack it as <30Q. */
+_Static_assert(sizeof(struct guest_stop_request)==30*8,"guest-stop request ABI");
 struct guest_stop_result {
     uint64_t status, entered, magic, version, mode, start, end, hz;
     uint64_t context_bytes, request, owner, stopped, lifecycle, reusable;

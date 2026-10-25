@@ -74,7 +74,7 @@ def main():
             require(work+WORK_BYTES<=base+info['heap_size'],'work exceeds QEMU heap')
             nonce=secrets.randbits(64) or 1;session=secrets.randbits(64) or 1
             mode={'normal':0,'reserved-peer':3,'thermal-retirement':4}[args.case]
-            req=struct.pack('<26Q',MAGIC,mode,0,0,session,nonce,*([0]*20))
+            req=struct.pack('<30Q',MAGIC,mode,0,0,session,nonce,*([0]*24))
             (out/'request.bin').write_bytes(req)
             proxy.writemem(code,blob);require(proxy.readmem(code,len(blob))==blob,'upload mismatch');proxy.flush_code(code,len(blob))
             proxy.writemem(result,bytes(8192));proxy.writemem(request,req)
