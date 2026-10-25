@@ -30,13 +30,23 @@ Q1N1 = ROOT.parent / 'q1n1'
 sys.path.insert(0, str(Q1N1 / 'tools'))
 import q1n1proxy as q1n1                                            # noqa: E402
 
+# Host toolchain. The macOS Homebrew defaults are kept so the Mac control path
+# is unchanged; each is overridable by an env var so the same probe builds and
+# runs under a Linux toolchain (clang-22 / ld.lld-22 on Debian, for example).
 LLVM = Path('/opt/homebrew/opt/llvm/bin')
+CLANG = os.environ.get('SNAP_CLANG', str(LLVM / 'clang'))
+OBJCOPY = os.environ.get('SNAP_OBJCOPY', str(LLVM / 'llvm-objcopy'))
 # q1n1's Makefile resolves the linker the same way: lld from its own keg
 # when present, otherwise whatever is on PATH.
-LLD = str(Path('/opt/homebrew/opt/lld/bin/ld.lld')) \
-    if Path('/opt/homebrew/opt/lld/bin/ld.lld').exists() else 'ld.lld'
+LLD = os.environ.get('SNAP_LLD', str(Path('/opt/homebrew/opt/lld/bin/ld.lld'))
+                     if Path('/opt/homebrew/opt/lld/bin/ld.lld').exists() else 'ld.lld')
 DEFAULT_DEVICE = None
-FIRMWARE = '/opt/homebrew/share/qemu/edk2-aarch64-code.fd'
+FIRMWARE = os.environ.get('SNAP_EDK2_CODE', '/opt/homebrew/share/qemu/edk2-aarch64-code.fd')
+# QEMU binary and the control CPU/memory knobs. Defaults reproduce the original
+# -cpu max -m 4G baseline; Phase 2 overrides them (pauth-impdef, 16G) via env.
+QEMU = os.environ.get('SNAP_QEMU', 'qemu-system-aarch64')
+QEMU_CPU = os.environ.get('SNAP_QEMU_CPU', 'max')
+QEMU_MEM = os.environ.get('SNAP_QEMU_MEM', '4G')
 
 
 class Qemu:
@@ -63,11 +73,11 @@ class Qemu:
     def __enter__(self):
         Path(self.sock).unlink(missing_ok=True)
         self.proc = subprocess.Popen(
-            ['qemu-system-aarch64', '-machine', 'virt,virtualization=on,gic-version=3',
+            [QEMU, '-machine', 'virt,virtualization=on,gic-version=3',
              # 4 GiB because xnuboot needs half a gigabyte of contiguous free
              # physical memory for the image, its tables and the handoff, and
              # virt starts RAM at 0x40000000. -cpu max is what supplies FEAT_NV2.
-             '-accel', 'tcg', '-cpu', 'max', '-smp', '1', '-m', '4G',
+             '-accel', 'tcg', '-cpu', QEMU_CPU, '-smp', '1', '-m', QEMU_MEM,
              '-bios', FIRMWARE, '-drive', f'format=raw,file=fat:rw:{self.esp}',
              # q1n1 refuses to run without a framebuffer; ramfb is what the
              # q1n1 QEMU harness uses.
@@ -158,22 +168,22 @@ def build(name, out_dir):
         for rel in MULTI[name] + optional_sources(name, FLAGS):
             src = ROOT / rel
             obj = out_dir / (src.stem + '-' + src.suffix.lstrip('.') + '.o')
-            subprocess.run([str(LLVM / 'clang'), *FLAGS, f'-I{ROOT / "shadow"}',
+            subprocess.run([CLANG, *FLAGS, f'-I{ROOT / "shadow"}',
                             f'-I{ROOT.parent / "q1n1/platform/uefi"}',
                             '-c', str(src), '-o', str(obj)], check=True)
             objs.append(str(obj))
         elf = out_dir / f'{name}.elf'
         subprocess.run([LLD, '-T', str(ROOT / 'probes' / 'probe.ld'),
                         '-o', str(elf), *objs], check=True)
-        subprocess.run([str(LLVM / 'llvm-objcopy'), '-O', 'binary', str(elf), str(binary)],
+        subprocess.run([OBJCOPY, '-O', 'binary', str(elf), str(binary)],
                        check=True)
         return payload()
 
     source = next(p for p in (ROOT / 'probes').iterdir()
                   if p.stem == name and p.suffix in ('.S', '.c'))
     obj = out_dir / f'{name}.o'
-    subprocess.run([str(LLVM / 'clang'), *FLAGS, '-c', str(source), '-o', str(obj)], check=True)
-    subprocess.run([str(LLVM / 'llvm-objcopy'), '-O', 'binary', '--only-section=.text',
+    subprocess.run([CLANG, *FLAGS, '-c', str(source), '-o', str(obj)], check=True)
+    subprocess.run([OBJCOPY, '-O', 'binary', '--only-section=.text',
                     str(obj), str(binary)], check=True)
     return payload()
 
