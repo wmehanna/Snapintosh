@@ -85,8 +85,10 @@ int64_t xnuboot_prepare(void)
     uint64_t physical_hz, mmfr0;
     __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(physical_hz));
     __asm__ volatile("mrs %0, id_aa64mmfr0_el1" : "=r"(mmfr0));
-    if (physical_hz != p->clock_host_hz || !(mmfr0 >> 60) ||
-        clock_rate_init(&vcpu_of(c)->clock_rate, physical_hz, p->clock_guest_hz)) return -15;
+    /* clock_host_hz is the physical rate, or a multiple of it under time
+     * dilation (compat/clock.h clock_host_dilation); scale with the declared one. */
+    if (!clock_host_dilation(physical_hz, p->clock_host_hz) || !(mmfr0 >> 60) ||
+        clock_rate_init(&vcpu_of(c)->clock_rate, p->clock_host_hz, p->clock_guest_hz)) return -15;
     if(c->thermal && (physical_hz!=19200000 || thermal_admit(c)))return -28;
     if (p->device_count > 4 || p->mem_high <= p->mem_low) return -14;
     uint64_t panic_page=p->scratch_pa-SPTM_PANIC_PAGE_SIZE;
@@ -322,8 +324,8 @@ static int64_t vcpu_arch_prepare(struct context *c)
         uint64_t physical_hz,mmfr0;
         __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(physical_hz));
         __asm__ volatile("mrs %0, id_aa64mmfr0_el1" : "=r"(mmfr0));
-        if (physical_hz!=p->clock_host_hz || !(mmfr0>>60) ||
-            clock_rate_init(&v->clock_rate,physical_hz,p->clock_guest_hz)) return -15;
+        if (!clock_host_dilation(physical_hz,p->clock_host_hz) || !(mmfr0>>60) ||
+            clock_rate_init(&v->clock_rate,p->clock_host_hz,p->clock_guest_hz)) return -15;
     }
     uint64_t root = vcpu_vttbr(vcpu_of(c));
 

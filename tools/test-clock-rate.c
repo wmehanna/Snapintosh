@@ -37,6 +37,22 @@ int main(void)
             CHECK(clock_rate_wait(&r,raw,(uint64_t)exact-1,budget)==0);
         }
     }
+    /* Time dilation: the declared host rate is K times the physical one. */
+    CHECK(clock_host_dilation(19200000,19200000)==1);          /* the A16 */
+    CHECK(clock_host_dilation(1000000000,1000000000)==1);      /* QEMU virt, no dilation */
+    CHECK(clock_host_dilation(1000000000,4000000000u)==4);
+    CHECK(clock_host_dilation(62500000,1000000000)==16);
+    CHECK(clock_host_dilation(62500000,1062500000)==0);         /* K = 17 */
+    CHECK(clock_host_dilation(19200000,24000000)==0);           /* not a multiple */
+    CHECK(clock_host_dilation(24000000,19200000)==0);           /* slower than physical */
+    CHECK(clock_host_dilation(0,24000000)==0 && clock_host_dilation(24000000,0)==0);
+    {   /* Dilated by 4, a guest second takes four physical seconds. */
+        struct clock_rate d;
+        CHECK(clock_rate_init(&d,4000000000u,24000000)==0);
+        CHECK(clock_rate_sample(&d,4000000000u)==24000000);
+        CHECK(clock_rate_sample(&d,1000000000)==6000000);
+        CHECK(clock_rate_wait(&d,0,24000000,UINT64_MAX)==4000000000u);
+    }
     struct clock_rate r={3,5}, saved=r;
     struct clock_rate slow={UINT32_MAX,1};
     CHECK(clock_rate_wait(&slow,UINT32_MAX-2,1,5)==2);

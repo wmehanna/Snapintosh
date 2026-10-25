@@ -49,7 +49,32 @@ FIRMWARE = os.environ.get('SNAP_EDK2_CODE', '/opt/homebrew/share/qemu/edk2-aarch
 QEMU = os.environ.get('SNAP_QEMU', 'qemu-system-aarch64')
 QEMU_CPU = os.environ.get('SNAP_QEMU_CPU', 'max')
 QEMU_MEM = os.environ.get('SNAP_QEMU_MEM', '4G')
+# vCPU count. 1 keeps the single-CPU control; Phase 3 runs 6 with SNAP_SMP=1
+# (the J700 topology, MTTCG). Checked here so a typo fails before QEMU starts.
+QEMU_SMP = os.environ.get('SNAP_QEMU_SMP', '1')
+if not QEMU_SMP.isdigit() or not 1 <= int(QEMU_SMP) <= 6:
+    raise SystemExit('SNAP_QEMU_SMP must be 1-6')
 # SNAP_QEMU_ARGS: extra options appended to the QEMU command (diagnosis).
+
+
+def host_timebase(timer_hz, dilation=None):
+    """The host counter rate the monitor is told (params clock_host_hz).
+    SNAP_CLOCK_DILATION=K (1-16, default 1) declares K times the measured rate,
+    so the trapped, scaled guest counter (compat/clock.h) runs K times slower
+    than wall time: every guest timeout (IOKit waitForMatchingService, CPU start,
+    deadline timers) and the monitor's own clock_host_hz waits stretch K times.
+    Why: under TCG the guest runs 10-30x slower than on the A16, so 45-second
+    IOKit waits expire before the matching provider starts (snaplab p3 run2:
+    AppleGPIOICController.cpp:459 after 77 s). The run watchdog reads CNTFRQ
+    itself and stays in wall seconds. The monitor keeps the rate in a u32.
+    K=1 returns the measured rate unchanged (the A16 path)."""
+    raw = os.environ.get('SNAP_CLOCK_DILATION', '1') if dilation is None else dilation
+    if not str(raw).isdigit() or not 1 <= int(raw) <= 16:
+        raise ValueError('SNAP_CLOCK_DILATION must be an integer 1-16')
+    hz = timer_hz * int(raw)
+    if not 0 < hz <= 0xffffffff:
+        raise ValueError(f'SNAP_CLOCK_DILATION {raw} puts the {timer_hz} Hz host counter above 32 bits')
+    return hz
 
 
 class Qemu:
@@ -84,7 +109,7 @@ class Qemu:
              # 4 GiB because xnuboot needs half a gigabyte of contiguous free
              # physical memory for the image, its tables and the handoff, and
              # virt starts RAM at 0x40000000. -cpu max is what supplies FEAT_NV2.
-             '-accel', 'tcg', '-cpu', QEMU_CPU, '-smp', '1', '-m', QEMU_MEM,
+             '-accel', 'tcg', '-cpu', QEMU_CPU, '-smp', QEMU_SMP, '-m', QEMU_MEM,
              '-bios', FIRMWARE, '-drive', f'format=raw,file=fat:rw:{self.esp}',
              # q1n1 refuses to run without a framebuffer; ramfb is what the
              # q1n1 QEMU harness uses.
@@ -1218,7 +1243,7 @@ def run_xnuboot(proxy, info, code, guest_profile='j700ap-26A428',
         if relay_panel and host.framebuffer:
             raise ValueError('--relay-panel requires SNAP_NO_FB=1; host drawing '
                              'cannot share a framebuffer measurement')
-        xb.HOST_TIMEBASE_HZ = host.timer_hz
+        xb.HOST_TIMEBASE_HZ = host_timebase(host.timer_hz)
         kernelcache = kernelcache or xb.DEFAULT_KERNELCACHE
     except ValueError as error:
         return verdict(EXIT_LOADER, str(error))

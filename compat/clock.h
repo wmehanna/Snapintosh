@@ -21,6 +21,18 @@
  * freestanding host does not need a compiler 128-bit division runtime. */
 struct clock_rate { uint32_t host_hz, guest_hz; };
 int clock_rate_init(struct clock_rate *rate, uint64_t host_hz, uint64_t guest_hz);
+/* The rate the host declared (params clock_host_hz) against the physical
+ * counter (CNTFRQ_EL0): declared = K * physical with 1 <= K <= 16 gives K,
+ * anything else 0. K > 1 is time dilation for slow emulated hosts (probes/run.py
+ * SNAP_CLOCK_DILATION): the monitor times its waits and scales the guest counter
+ * with the declared rate, so guest time runs K times slower than wall time.
+ * The A16 declares its physical 19.2 MHz: K = 1, the rate unchanged. */
+static inline unsigned clock_host_dilation(uint64_t physical_hz, uint64_t declared_hz)
+{
+    if (!physical_hz || !declared_hz || declared_hz % physical_hz) return 0;
+    uint64_t k = declared_hz / physical_hz;
+    return k <= 16 ? (unsigned)k : 0;
+}
 uint64_t clock_rate_sample(const struct clock_rate *rate, uint64_t host_count);
 /* Earliest physical tick reaching guest_deadline, bounded by host_budget.
  * Accounts for the fractional phase discarded by the sampled guest count. */
