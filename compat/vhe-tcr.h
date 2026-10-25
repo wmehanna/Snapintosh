@@ -35,18 +35,18 @@ static inline uint64_t vhe_tcr_to_el2(uint64_t vhe)
  * enough (snaplab run4: same fault, X30 just past the conversion call, TCR_EL2
  * still AAVMF's). The architecture allows that: an MSR may act before the ISB.
  *
- * Non-VHE view: T0SZ..TG0 unchanged, PS (18:16) = the entry IPS, bit 32 (DS)
- * clear, RES1 23/31 set. VHE view: the same TTBR0 walk, IPS (34:32) = 0b100,
- * 44 bits, or 0b010 below that (bit 32 must stay clear for the other view),
- * and the TTBR1 fields (T1SZ, A1, IRGN1, ORGN1, SH1) cleared, which needs
- * EPD1 set: 23 is EPD1 there, 31 with 30 clear is TG1 = 4 KiB. Returns 0 when
- * the entry value has TTBR1 walks enabled; then no bridge exists. */
+ * Non-VHE view: T0SZ..TG0 unchanged, PS (18:16) = the entry IPS, bits 32 (DS)
+ * and 33 (MTX) clear, RES1 23/31 set. VHE view: the same TTBR0 walk and
+ * IPS (34:32) = 0b100, 44 bits, the only encoding of at least 44 bits that
+ * leaves 32 and 33 clear. The TTBR1 fields are unused there (EPD1, bit 23,
+ * set; 31 with 30 clear is TG1 = 4 KiB): A1, IRGN1, ORGN1 and SH1 are
+ * cleared and T1SZ carries PS in its low bits. Returns 0, no bridge, when
+ * TTBR1 walks are enabled or the entry IPS is below 44 bits. */
 static inline uint64_t vhe_tcr_bridge(uint64_t vhe)
 {
-    if (!((vhe >> 23) & 1)) return 0;
     uint64_t ips = (vhe >> 32) & 7;
-    uint64_t both = ips >= 4 ? 4 : ips >= 2 ? 2 : 0;
+    if (!((vhe >> 23) & 1) || ips < 4) return 0;
     uint64_t v = vhe & ~(0x7fff0000ULL | (7ULL << 32));
-    return v | (ips << 16) | (1ULL << 23) | (1ULL << 31) | (both << 32);
+    return v | (ips << 16) | (1ULL << 23) | (1ULL << 31) | (4ULL << 32);
 }
 #endif

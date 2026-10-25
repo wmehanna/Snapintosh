@@ -78,9 +78,11 @@ check((b >> 16) & 7 == 5 and not (b >> 32) & 1 and b & RES1 == RES1,
 check((b >> 32) & 7 == 4 and (b >> 23) & 1 and (b >> 30) & 3 == 2 and not (b >> 22) & 1,
       'VHE view: IPS 44 bits covers the 16 GiB guest, EPD1 set, TG1 4 KiB, A1 clear')
 check(bridged[1] == 0, 'TTBR1 walks enabled (EPD1 clear): no bridge')
-check((bridged[2] >> 32) & 7 == 2 and (bridged[2] >> 16) & 7 == 3, '42-bit entry: VHE view 40 bits, PS 42 bits')
-check((bridged[3] >> 32) & 7 == 2 and (bridged[4] >> 32) & 7 == 0,
-      'bit 32 never set in the bridge (it is DS in the EL2 layout)')
+check(bridged[2] == 0 and bridged[3] == 0 and bridged[4] == 0,
+      'entry IPS below 44 bits: no bridge (no encoding keeps DS and MTX clear)')
+check(not (b >> 32) & 3, 'bits 32 (DS) and 33 (MTX) clear in the bridge')
+check((b >> 16) & 0x3f == 5 and not b & ((1 << 22) | (0x3f << 24)),
+      'VHE view: T1SZ carries only PS, A1/IRGN1/ORGN1/SH1 cleared (TTBR1 off by EPD1)')
 check(bridged[5] >> 37 == 1, 'fields above IPS (TBI0 and up) are kept for the VHE view')
 
 failed = [label for ok, label in checks if not ok]

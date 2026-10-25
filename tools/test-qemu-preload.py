@@ -19,6 +19,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'probes'))
 import qemu_preload as qp                                       # noqa: E402
 
+try:
+    qp._real_manifest = qp._manifest
+    qp._real_manifest([(qp.EFI_BLOB, 8, '00' * 32)])
+except (ImportError, ValueError):
+    qp._real_manifest = None
 qp._manifest = lambda files: b'manifest:' + repr(files).encode()
 MIN = qp.MIN_CHUNK
 BASE = 0x4_0000_0000
@@ -82,7 +87,6 @@ check(proxy.assembled(0x7000_0000, len(A)) == A and proxy.assembled(0x7100_0000,
 check(proxy.verified == [(0x1000, 3)], 'resident verifier runs once with the cache index')
 check(qp.PENDING is None, 'a full hit does not schedule a cache refresh')
 check(len(index['entries']) == 2 and index['blob_size'] == len(resident), 'index matches the blob')
-check(any(s > 8 << 20 for _, _, s in proxy.copies) is False, 'copies stay within the 8 MiB step')
 
 # 2. Small chunks are never cached nor copied.
 qp.PENDING = None
@@ -136,6 +140,42 @@ check(result[:2] == (0, 0) and qp.PENDING is not None, 'a cache that is not resi
 # 7. Duplicate content is stored once.
 folder, esp, index, resident, cached = setup({0x1000_0000: A, 0x2000_0000: A})
 check(len(index['entries']) == 1 and index['blob_size'] == len(A), 'duplicate chunks share one blob entry')
+
+# 7b. A chunk longer than the 8 MiB step is copied in bounded pieces.
+qp.PENDING = None
+big = blob(b'g', (8 << 20) + 3 * MIN)
+folder, esp, index, resident, cached = setup({0x1000_0000: big})
+proxy = FakeProxy(resident)
+chunks = {0x6000_0000: big}
+qp.apply(proxy, INFO, cached, chunks, folder / qp.INDEX)
+check(len(proxy.copies) == 2 and max(s for _, _, s in proxy.copies) == 8 << 20
+      and proxy.assembled(0x6000_0000, len(big)) == big, 'a 8 MiB+ chunk is copied in two bounded steps')
+
+# 7c. A chunk at an address that is not 8-byte aligned is neither cached nor
+# counted as a miss, so it cannot force a refresh on every run.
+qp.PENDING = None
+folder, esp, index, resident, cached = setup({0x1000_0004: A, 0x2000_0000: B})
+check(len(index['entries']) == 1, 'unaligned guest address is left out of the cache')
+chunks = {0x1000_0004: A, 0x2000_0000: B}
+qp.apply(FakeProxy(resident), INFO, cached, chunks, folder / qp.INDEX)
+check(list(chunks) == [0x1000_0004] and qp.PENDING is None,
+      'unaligned chunk is uploaded without scheduling a refresh')
+
+# 7d. The real q1n1 manifest format, and a foreign manifest is left alone.
+real = qp.__dict__.get('_real_manifest')
+if real is not None:
+    qp._manifest = real
+    folder, esp, index, resident, cached = setup({0x1000_0000: A})
+    raw = (esp / qp.EFI_DIR / qp.MANIFEST).read_bytes()
+    check(qp.EFI_BLOB.encode() in raw and len(raw) == 32 + 296, 'q1n1 manifest names the chunk blob')
+    qp._manifest = lambda files: b'manifest:' + repr(files).encode()
+foreign = Path(tempfile.mkdtemp()) / 'qemu-esp'
+(foreign / qp.EFI_DIR).mkdir(parents=True)
+(foreign / qp.EFI_DIR / qp.MANIFEST).write_bytes(b'\\Snapintosh\\basesystem.apfs')
+check(qp.write(foreign, {0x1000_0000: A}) is None and not (foreign / qp.EFI_DIR / qp.BLOB).exists(),
+      'a RAMDisk preload manifest is not overwritten')
+qp.remove(foreign)
+check((foreign / qp.EFI_DIR / qp.MANIFEST).exists(), 'nor removed')
 
 # 8. remove() clears the ESP files and the host index; enabled() is opt-in.
 qp.remove(esp)

@@ -1672,19 +1672,19 @@ def run_xnuboot(proxy, info, code, guest_profile='j700ap-26A428',
     if qemu_preload.enabled(os.environ):
         # QEMU only: the proxy UART moves about 43 KiB/s into the guest under
         # TCG; chunks q1n1 loaded from the ESP are copied locally instead.
-        start = time.time()
+        copy_start = time.time()
         try:
             copied, count, note = qemu_preload.apply(proxy, info, cached_files, chunks,
                                                      ROOT / 'build' / qemu_preload.INDEX)
         except ValueError as error:
             return verdict(EXIT_LOADER, f'QEMU chunk cache refused: {error}')
         print(f'  QEMU preload: {count} chunks, {copied / (1 << 20):.1f} MiB copied locally '
-              f'in {time.time() - start:.1f}s ({note})')
-    start = time.time()
+              f'in {time.time() - copy_start:.1f}s ({note})')
+    proxy_start = time.time()
     for pa, blob in sorted(chunks.items()):
         proxy.writemem(pa, blob)
     print(f'  uploaded {len(chunks)} chunks, {sum(map(len, chunks.values())) / (1 << 20):.1f} MiB '
-          f'over the proxy in {time.time() - start:.1f}s')
+          f'over the proxy in {time.time() - proxy_start:.1f}s')
     if ans_range and ans_window:
         # Everything below the SSD's DMA window: state and firmware page zero, the synthesized
         # GPT's head and tail, the SSD params (state zero). The queues q1n1 left running in the

@@ -47,23 +47,36 @@ def enabled(environ):
     return environ.get('SNAP_QEMU_PRELOAD') == '1'
 
 
+def ours(esp):
+    """Is the ESP manifest absent or this cache's own? q1n1 reads one fixed
+    path, \\Snapintosh\\q1n1-preload.bin, which the RAMDisk preload uses too
+    (q1n1/platform/uefi/preload.h), so a foreign manifest is never touched."""
+    path = Path(esp) / EFI_DIR / MANIFEST
+    return not path.exists() or EFI_BLOB.encode('ascii') in path.read_bytes()
+
+
 def remove(esp):
     esp = Path(esp)
-    for path in (esp / EFI_DIR / MANIFEST, esp / EFI_DIR / BLOB, esp.parent / INDEX):
+    if ours(esp):
+        (esp / EFI_DIR / MANIFEST).unlink(missing_ok=True)
+    for path in (esp / EFI_DIR / BLOB, esp.parent / INDEX):
         path.unlink(missing_ok=True)
 
 
 def write(esp, chunks, min_chunk=MIN_CHUNK):
     """Store the large chunks (deduplicated by content) on the ESP."""
     esp = Path(esp)
+    if not ours(esp):
+        print(f'QEMU preload: {esp / EFI_DIR / MANIFEST} belongs to another preload; not replaced')
+        return None
     folder = esp / EFI_DIR
     folder.mkdir(parents=True, exist_ok=True)
     entries, seen, offset = [], set(), 0
     whole = hashlib.sha256()
     with (folder / BLOB).open('wb') as out:
-        for _, body in sorted(chunks.items()):
+        for pa, body in sorted(chunks.items()):
             data = bytes(body)
-            if len(data) < min_chunk:
+            if len(data) < min_chunk or pa % 8:     # P_MEMCPY8 needs 8-byte targets
                 continue
             digest = hashlib.sha256(data).hexdigest()
             if (len(data), digest) in seen:
@@ -113,10 +126,10 @@ def apply(proxy, info, cached_files, chunks, index_path, min_chunk=MIN_CHUNK):
     copied = count = missed = 0
     for pa in sorted(chunks):
         body = chunks[pa]
-        if len(body) < min_chunk:
+        if len(body) < min_chunk or pa % 8:         # never cached, see write()
             continue
         offset = where.get((len(body), hashlib.sha256(body).hexdigest()))
-        if offset is None or pa % 8:
+        if offset is None:
             missed += 1
             continue
         aligned = len(body) & ~7
