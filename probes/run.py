@@ -25,6 +25,7 @@ from bootcontract import HostRuntime
 from xnuboot_terminal import require_xnuboot_terminal
 from devicemodel import MODEL_MAX, RESET_WORDS
 import monitor_work
+import qemu_preload
 from monitor_work import resident_work
 Q1N1 = ROOT.parent / 'q1n1'
 sys.path.insert(0, str(Q1N1 / 'tools'))
@@ -66,6 +67,10 @@ class Qemu:
             raise SystemExit(f'build q1n1 first: make -C {root.parent / "q1n1"} uefi')
         shutil.copyfile(payload, self.esp / 'q1n1.efi')
         (self.esp / 'startup.nsh').write_text('fs0:\nq1n1.efi --uart-proxy\n')
+        # A seeded chunk cache (probes/qemu_preload.py) stays on the ESP only
+        # when asked for, so a default run keeps the original UART-only path.
+        if not qemu_preload.enabled(os.environ):
+            qemu_preload.remove(self.esp)
         self.sock = f'/tmp/snapintosh-proxy-{os.getpid()}.sock'
         self.log = root / 'build' / 'qemu.log'
         self.proc = None
@@ -94,6 +99,12 @@ class Qemu:
         if self.proc:
             self.proc.terminate()
             self.proc.wait(timeout=10)
+        # Refresh the cache only once QEMU is gone: vvfat serves this folder.
+        if qemu_preload.PENDING is not None:
+            index = qemu_preload.write(self.esp, qemu_preload.PENDING)
+            qemu_preload.PENDING = None
+            if index:
+                print(f'QEMU preload: cached {len(index["entries"])} chunks for the next run')
         Path(self.sock).unlink(missing_ok=True)
 
 
@@ -1646,8 +1657,22 @@ def run_xnuboot(proxy, info, code, guest_profile='j700ap-26A428',
         del chunks[isc_pa]
         print(f'  ISC initialized {isc_size >> 20} MiB locally; '
               f'uploaded {sent / (1 << 20):.2f} MiB of nonzero blocks')
+    if qemu_preload.enabled(os.environ):
+        # QEMU only: the proxy UART moves about 43 KiB/s into the guest under
+        # TCG; chunks q1n1 loaded from the ESP are copied locally instead.
+        start = time.time()
+        try:
+            copied, count, note = qemu_preload.apply(proxy, info, cached_files, chunks,
+                                                     ROOT / 'build' / qemu_preload.INDEX)
+        except ValueError as error:
+            return verdict(EXIT_LOADER, f'QEMU chunk cache refused: {error}')
+        print(f'  QEMU preload: {count} chunks, {copied / (1 << 20):.1f} MiB copied locally '
+              f'in {time.time() - start:.1f}s ({note})')
+    start = time.time()
     for pa, blob in sorted(chunks.items()):
         proxy.writemem(pa, blob)
+    print(f'  uploaded {len(chunks)} chunks, {sum(map(len, chunks.values())) / (1 << 20):.1f} MiB '
+          f'over the proxy in {time.time() - start:.1f}s')
     if ans_range and ans_window:
         # Everything below the SSD's DMA window: state and firmware page zero, the synthesized
         # GPT's head and tail, the SSD params (state zero). The queues q1n1 left running in the
