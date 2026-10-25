@@ -1317,7 +1317,9 @@ def run_xnuboot(proxy, info, code, guest_profile='j700ap-26A428',
                            f'no free region of {need >> 20} MiB in the '
                            f"target's memory map")
         start, end = region
-        xb.place(start, end - start, guest_span=guest_span)
+        fb = host.framebuffer
+        xb.place(start, end - start, guest_span=guest_span,
+                 panel=(fb.base, fb.base + fb.stride * fb.height) if fb else None)
         work = (xb.BOOTSTRAP_PA + xb.BOOTSTRAP_SPAN + 65535) & ~65535
         work_size = monitor_work.WORK_SIZE
         monitor_work.validate_region(work, work_size, xb.PHYS_BASE,

@@ -92,5 +92,21 @@ if built['ramdisk_range']:
 xb.place(0xda000000,guest_span=384<<20)
 check((xb.TABLE_PA,xb.FRAMEMAP_PA,xb.FRAMEMAP_SPAN,xb.VSPACE_TOP+1)==
       (0xe3200000,0xe1900000,0x100000,0xfffffe0200000000))
+# A panel handed to XNU widens the frame map's envelope. Near the guest (the
+# A16: panel at 0xf9a20000 above RAM at 0xda000000) the small arenas stay; far
+# above it (QEMU ramfb at 0xbf0f0000, guest at 0x48000000) they cannot hold
+# it, and the large layout must be chosen instead of a build-time refusal.
+xb.place(0xda000000,guest_span=384<<20,panel=(0xf9a20000,0xf9a20000+0x2000000))
+check(xb.FRAMEMAP_SPAN==0x100000 and xb.FRAMETABLE_SPAN==0x100000)
+xb.place(0x48000000,0x60000000,guest_span=384<<20)
+check(xb.FRAMEMAP_SPAN==0x100000)
+xb.place(0x48000000,0x60000000,guest_span=384<<20,panel=(0xbf0f0000,0xbf0f0000+800*4*600))
+check(xb.FRAMEMAP_SPAN==64<<20 and xb.FRAMETABLE_SPAN==32<<20)
+check(xb.TABLE_PA==0x48000000+0xd800000)
+xb.place(0x48000000,0x60000000,guest_span=384<<20,panel=(0x43f0f0000,0x43f0f0000+800*4*600))
+check(xb.FRAMEMAP_SPAN==64<<20)
+xb.place(0xda000000,guest_span=384<<20)
+check((xb.TABLE_PA,xb.FRAMEMAP_PA,xb.FRAMEMAP_SPAN,xb.VSPACE_TOP+1)==
+      (0xe3200000,0xe1900000,0x100000,0xfffffe0200000000))
 xb.validate_early_heap()
 print(f'PASS: {checks} large-memory layout checks (8 GiB high RAM; no hardware)')

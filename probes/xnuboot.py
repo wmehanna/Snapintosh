@@ -453,7 +453,7 @@ REGION_ALIGN = 0x2000000
 DEFAULT_PHYS_BASE = 0xD9E00000
 
 
-def place(base, span=None, guest_span=None):
+def place(base, span=None, guest_span=None, panel=None):
     """Move the physical layout to `base`. Returns the region's end.
 
     `span` is how much memory is free there; `guest_span` is how much of it the
@@ -479,6 +479,13 @@ def place(base, span=None, guest_span=None):
     # entire physical envelope, including unowned holes. Reserve capacity for
     # the 36-bit IPA range instead of silently overlapping the table arena.
     large = base + want + BOOTSTRAP_SPAN > 1 << 32 or want > 1 << 30
+    # `panel` is the (start, end) of a framebuffer handed to XNU. The frame map
+    # spans it too, and the small arenas cover 1 GiB of 16 KiB frames. On the
+    # A16 the panel sits just above low RAM; QEMU's ramfb lands near the top
+    # of RAM (snaplab: 0xbf0f0000 with 2 GiB, 0x43f0f0000 with 16 GiB, guest
+    # at 0x48000000: "the frame map needs 0x1dcb20 for 122034 frames").
+    if panel is not None:
+        large = large or max(panel[1] - base, base + want - panel[0]) > 1 << 30
     FRAMETABLE_SPAN = 0x02000000 if large else 0x00100000
     FRAMEMAP_OFFSET = FRAMETABLE_OFFSET + FRAMETABLE_SPAN
     FRAMEMAP_SPAN = 0x04000000 if large else 0x00100000
