@@ -702,6 +702,11 @@ static constexpr size_t kLayerSurface0 = 0xb80;
 static constexpr size_t kLayerCount = 4;       // swap_submit 0x24884 and swapWillChangeDisplayedData 0x2bbd0: cmp #4
 static constexpr size_t kQueueNext = 0xd38;
 static constexpr size_t kQueuePrev = 0xd40;
+// Dirty region. IOMobileFramebufferLegacy::getCurrentDirtyRegion_gated (iomgf 0x2c7ac) reads the
+// current swap (this+0x1a40): 0x2c7b8 ldrb w9,[swap,#0x228]; 0x2c7bc tbz w9,#0 gates on bit 0, then
+// 0x2c7c0 add x9,swap,#0x1a1 returns the Rect. +0x1a1 is unaligned: read with memcpy.
+static constexpr size_t kDirtyValid = 0x228;   // u8, bit 0 = a dirty rect is present
+static constexpr size_t kDirtyRect = 0x1a1;    // Rect {x, y, w, h}, unaligned
 static inline uint8_t layerMask(const IOMFBSwapIORequest *s)
 { return *((const uint8_t *)s + kLayerMask); }
 static inline uint32_t layerMaskWord(const IOMFBSwapIORequest *s)
@@ -714,6 +719,10 @@ static inline Rect srcRect(const IOMFBSwapIORequest *s, unsigned layer)
 { Rect r; __builtin_memcpy(&r, (const uint8_t *)s + kSrcRect0 + 16 * layer, sizeof r); return r; }
 static inline Rect dstRect(const IOMFBSwapIORequest *s, unsigned layer)
 { Rect r; __builtin_memcpy(&r, (const uint8_t *)s + kDstRect0 + 16 * layer, sizeof r); return r; }
+static inline bool dirtyValid(const IOMFBSwapIORequest *s)
+{ return *((const uint8_t *)s + kDirtyValid) & 1; }
+static inline Rect dirtyRect(const IOMFBSwapIORequest *s)
+{ Rect r; __builtin_memcpy(&r, (const uint8_t *)s + kDirtyRect, sizeof r); return r; }
 static inline IOMFBSwapIORequest *&queueNext(IOMFBSwapIORequest *s)
 { return *(IOMFBSwapIORequest **)((uint8_t *)s + kQueueNext); }
 static inline IOMFBSwapIORequest **&queuePrev(IOMFBSwapIORequest *s)
@@ -736,6 +745,8 @@ public:
     uint64_t getBaseOffset() const;
     uint32_t getPixelFormat() const;
     uint32_t getSurfaceID() const;
+    uint32_t getCacheMode() const;     // __ZNK9IOSurface12getCacheModeEv (IOSurface 0x15894): ldr w0,[this,#0x9c]; ret
+
     uint64_t getAllocSize() const;
     IOMemoryDescriptor *getMemoryDescriptor() const;
 private:
