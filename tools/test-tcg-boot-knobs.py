@@ -29,6 +29,24 @@ def qemu_command(env):
                           env={**os.environ, **env})
 
 
+class ExtraCflags(unittest.TestCase):
+    """SNAP_EXTRA_CFLAGS: an opt-in build recipe (e.g. the A16 control set) for QEMU runs."""
+    def flags(self, value=None):
+        env = {k: v for k, v in os.environ.items() if k != 'SNAP_EXTRA_CFLAGS'}
+        if value is not None:
+            env['SNAP_EXTRA_CFLAGS'] = value
+        out = subprocess.run([sys.executable, '-c', 'import sys; sys.path.insert(0, "probes"); '
+                              'import run; print(repr(run.FLAGS))'], cwd=ROOT, capture_output=True,
+                             text=True, env=env, check=True).stdout
+        return eval(out.strip())  # our own repr(list)
+    def test_unset_keeps_the_default_flags(self):
+        base = self.flags()
+        self.assertEqual(base[-2:], ['-fno-stack-protector', '-mcmodel=tiny'])
+        self.assertEqual(self.flags(''), base)
+    def test_flags_are_appended_in_order(self):
+        base = self.flags()
+        got = self.flags('-Os -DSNAP_NATIVE_CALLS=1 "-DX=a b"')
+        self.assertEqual(got, base + ['-Os', '-DSNAP_NATIVE_CALLS=1', '-DX=a b'])
 class QemuSmp(unittest.TestCase):
     def smp(self, result):
         argv = eval(result.stdout.strip())  # our own repr(list) from qemu_command

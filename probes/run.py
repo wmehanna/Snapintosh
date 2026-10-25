@@ -238,6 +238,10 @@ def optional_sources(name, flags):
 FLAGS = ['--target=aarch64-unknown-none-elf', '-ffreestanding', '-fno-pic',
          '-mgeneral-regs-only', '-O1', '-Wall', '-Wextra', '-Werror',
          '-fno-stack-protector', '-mcmodel=tiny']
+# Opt-in: extra compiler flags for this run's monitor build, e.g. the A16 speed
+# test's control recipe (tools/cycle_lib/speed_test.py speed_sets) on QEMU, where
+# no harness rewrites FLAGS. Unset, FLAGS and every ELF stay byte-identical.
+FLAGS += shlex.split(os.environ.get('SNAP_EXTRA_CFLAGS', ''))
 
 
 def build(name, out_dir):
