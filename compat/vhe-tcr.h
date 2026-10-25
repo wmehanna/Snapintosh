@@ -49,4 +49,26 @@ static inline uint64_t vhe_tcr_bridge(uint64_t vhe)
     uint64_t v = vhe & ~(0x7fff0000ULL | (7ULL << 32));
     return v | (ips << 16) | (1ULL << 23) | (1ULL << 31) | (4ULL << 32);
 }
+/* The EL2 TTBR0 regime the monitor actually runs under after the
+ * conversion. The A16's firmware enters EL2 in the Apple arm64e regime,
+ * a 47-bit TTBR0 (T0SZ 17, docs/APERTURE-FAULT.md, docs/COMPATIBILITY.md);
+ * QEMU's AAVMF enters with a 48-bit one (T0SZ 16). The monitor's own EL2
+ * mappings are all identity physical (every address below 2^39), so 47
+ * bits covers them and the two regimes are otherwise the same. The pauth
+ * signing helper (compat/pauth-native.S) refuses any regime whose T0SZ is
+ * below 17, because it momentarily forces T0SZ 17 to compose the PAC in
+ * the EL0 pointer's 47-bit field and a narrower live regime would shrink
+ * the L0 table under it. Raise exactly T0SZ 16 (48 bits) to 17 so the QEMU
+ * regime is the A16's kind; a narrower VA (T0SZ 17..24) is left alone, and a
+ * wider one (T0SZ below 16, 49-52 bits) is left alone too, so admission
+ * (tools/host-el2-mapping.py) still refuses it rather than this silently
+ * dropping mappings above 2^47. This runs only on the
+ * E2H=1 (AAVMF) entry path, never on the A16 (E2H=0), so the A16 regime is
+ * byte-for-byte unchanged. */
+static inline uint64_t vhe_tcr_el2_regime(uint64_t vhe)
+{
+    uint64_t el2 = vhe_tcr_to_el2(vhe);
+    if ((el2 & 63) == 16) el2 = (el2 & ~UINT64_C(63)) | 17;
+    return el2;
+}
 #endif

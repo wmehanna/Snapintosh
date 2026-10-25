@@ -174,8 +174,9 @@ class PlatformGeometry(unittest.TestCase):
         self.assertEqual(words[9:14],(1,2,3,4,5))
         self.assertEqual(words[15:20],tuple(0x80a0000+i*0x20000 for i in range(1,6)))
         self.assertEqual(words[20:],(0x8000000,0x80a0000,0x80a0000+6*0x20000,0x20000))
-        # The regime words are what the monitor runs after clearing E2H (compat/vhe-tcr.h).
-        self.assertEqual(words[5],0x80853510)
+        # The regime words are what the monitor runs after clearing E2H (compat/vhe-tcr.h
+        # vhe_tcr_el2_regime): AAVMF's T0SZ 16 raised to 17 for the pauth helper.
+        self.assertEqual(words[5],0x80853511)
     def test_typer_walk_follows_vlpis_and_last(self):
         v4=self.virt(2);v4['gic']['distributors'][0]['version']=4
         API_PROBE['fill_redistributors'](v4,self.typer(2,stride=0x40000,vlpis=2))
@@ -203,7 +204,7 @@ class PlatformGeometry(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'fewer cores'):API['config_words'](inventory,self.QEMU_MEMORY,0x3e)
     def test_vhe_regime_converted_like_the_monitor(self):
         regime=API_MAP['validate_regime'](self.QEMU_MEMORY)
-        self.assertEqual(regime,(0x30c5183d,0x80853510,0x43ffff000,0xffbb4400))
+        self.assertEqual(regime,(0x30c5183d,0x80853511,0x43ffff000,0xffbb4400))
         self.assertEqual(API_MAP['validate_regime'](self.A16_MEMORY),(0x10003000100d,0x80843514,0xa8f5a000,0xffbb4400))
         for key,value in [('tcr',hex(0x580803510&~(1<<23))),   # TTBR1 walks live (EPD1 clear)
                           ('tcr',hex(0x580803510&~(7<<32)|(3<<32))),   # IPS 42 bits
@@ -215,11 +216,16 @@ class PlatformGeometry(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             src=Path(d)/'t.c';exe=Path(d)/'t'
             src.write_text('#include <stdio.h>\n#include <stdlib.h>\n#include "vhe-tcr.h"\n'
-                           'int main(int n,char **v){for(int i=1;i<n;i++)printf("%llx\\n",'
-                           '(unsigned long long)vhe_tcr_to_el2(strtoull(v[i],0,16)));return 0;}\n')
+                           'int main(int n,char **v){for(int i=1;i<n;i++)printf("%llx %llx\\n",'
+                           '(unsigned long long)vhe_tcr_to_el2(strtoull(v[i],0,16)),'
+                           '(unsigned long long)vhe_tcr_el2_regime(strtoull(v[i],0,16)));return 0;}\n')
             subprocess.run(['cc','-I',str(ROOT/'compat'),str(src),'-o',str(exe)],check=True)
             out=subprocess.run([str(exe),*(f'{v:x}' for v in values)],check=True,capture_output=True,text=True).stdout
-        self.assertEqual([int(x,16) for x in out.split()],[API_MAP['vhe_tcr_to_el2'](v) for v in values])
+        rows=[[int(x,16) for x in line.split()] for line in out.splitlines()]
+        self.assertEqual([a for a,_ in rows],[API_MAP['vhe_tcr_to_el2'](v) for v in values])
+        self.assertEqual([b for _,b in rows],[API_MAP['vhe_tcr_el2_regime'](v) for v in values])
+        # Only T0SZ 16 moves (to 17); every other value, wider ones included, is kept.
+        self.assertEqual([b for _,b in rows],[a|1 if a&63==16 else a for a,_ in rows])
 
 API_PROBE=runpy.run_path(str(ROOT/'tools/probe-a16-secondary.py'))
 API_MAP=runpy.run_path(str(ROOT/'tools/host-el2-mapping.py'))

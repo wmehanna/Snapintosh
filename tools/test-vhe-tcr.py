@@ -30,8 +30,9 @@ HARNESS = r'''
 int main(int argc, char **argv)
 {
     for (int i = 1; i < argc; i++)
-        printf("%llx %llx\n", (unsigned long long)vhe_tcr_to_el2(strtoull(argv[i], 0, 0)),
-               (unsigned long long)vhe_tcr_bridge(strtoull(argv[i], 0, 0)));
+        printf("%llx %llx %llx\n", (unsigned long long)vhe_tcr_to_el2(strtoull(argv[i], 0, 0)),
+               (unsigned long long)vhe_tcr_bridge(strtoull(argv[i], 0, 0)),
+               (unsigned long long)vhe_tcr_el2_regime(strtoull(argv[i], 0, 0)));
     return 0;
 }
 '''
@@ -49,11 +50,15 @@ with tempfile.TemporaryDirectory() as tmp:
                    check=True)
     inputs = [0x580803510] + [1 << b for b in MOVES] + [1 << b for b in DROPPED]
     bridges = [0x580803510, 0x580003510, 0x380803510, 0x280803510, 0x080803510, 0x2580803510]
-    run = subprocess.run([str(binary), *map(hex, inputs + bridges)], check=True,
+    extras = [0x580803514, 0x58080350c]  # T0SZ 20 (narrower), T0SZ 12 (52-bit, wider)
+    run = subprocess.run([str(binary), *map(hex, inputs + bridges + extras)], check=True,
                          capture_output=True, text=True)
-    pairs = [tuple(int(w, 16) for w in line.split()) for line in run.stdout.splitlines()]
-    out = [a for a, _ in pairs[:len(inputs)]]
-    bridged = [b for _, b in pairs[len(inputs):]]
+    triples = [tuple(int(w, 16) for w in line.split()) for line in run.stdout.splitlines()]
+    out = [a for a, _, _ in triples[:len(inputs)]]
+    bridged = [b for _, b, _ in triples[len(inputs):len(inputs) + len(bridges)]]
+    regime_aavmf = triples[0][2]
+    regime_wide = triples[len(inputs) + len(bridges)][2]
+    regime_52 = triples[len(inputs) + len(bridges) + 1][2]
 
 aavmf, rest = out[0], out[1:]
 check(aavmf == 0x80853510, f'AAVMF TCR_EL2 0x580803510 -> {aavmf:#x} (want 0x80853510)')
@@ -84,6 +89,22 @@ check(not (b >> 32) & 3, 'bits 32 (DS) and 33 (MTX) clear in the bridge')
 check((b >> 16) & 0x3f == 5 and not b & ((1 << 22) | (0x3f << 24)),
       'VHE view: T1SZ carries only PS, A1/IRGN1/ORGN1/SH1 cleared (TTBR1 off by EPD1)')
 check(bridged[5] >> 37 == 1, 'fields above IPS (TBI0 and up) are kept for the VHE view')
+
+# The regime helper (compat/vhe-tcr.h vhe_tcr_el2_regime, used by
+# probes/xnuboot/setup.c xnuboot_vhe_tcr) is the live EL2 TTBR0 the monitor
+# runs under. AAVMF's T0SZ 16 (48-bit) is raised to the Apple 47-bit value
+# (17) so the pauth signing helper's [17, 24] regime precondition holds
+# (compat/pauth-native.S); a regime already canonical is left alone.
+check(regime_aavmf == 0x80853511,
+      f'AAVMF EL2 regime {regime_aavmf:#x} (want 0x80853511, T0SZ raised 16 -> 17)')
+check(17 <= (regime_aavmf & 63) <= 24,
+      f'regime T0SZ {regime_aavmf & 63} is inside the pauth helper window [17, 24]')
+check(regime_aavmf & ~63 == aavmf & ~63,
+      'regime changes only T0SZ; every other field equals vhe_tcr_to_el2')
+check(regime_wide == 0x80853514 and (regime_wide & 63) == 20,
+      f'a regime already at T0SZ 20 is left unchanged (got {regime_wide:#x})')
+check(regime_52 & 63 == 12,
+      f'a 52-bit regime (T0SZ 12) is not narrowed, so admission still refuses it (got {regime_52:#x})')
 
 failed = [label for ok, label in checks if not ok]
 print(f'{len(checks) - len(failed)}/{len(checks)} passed')

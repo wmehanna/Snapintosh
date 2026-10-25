@@ -119,7 +119,7 @@ int xnuboot_setup(uint64_t work, uint64_t size, uint64_t params, uint64_t out,
 
 /* _start's VHE entry (QEMU AAVMF): compat/vhe-tcr.h. */
 uint64_t xnuboot_vhe_tcr(uint64_t tcr);
-uint64_t xnuboot_vhe_tcr(uint64_t tcr) { return vhe_tcr_to_el2(tcr); }
+uint64_t xnuboot_vhe_tcr(uint64_t tcr) { return vhe_tcr_el2_regime(tcr); }
 uint64_t xnuboot_vhe_tcr_bridge(uint64_t tcr);
 uint64_t xnuboot_vhe_tcr_bridge(uint64_t tcr) { return vhe_tcr_bridge(tcr); }
 void xnuboot_save(uint64_t vbar, uint64_t hcr, uint64_t tpidr,

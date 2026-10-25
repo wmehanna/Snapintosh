@@ -23,6 +23,17 @@ def vhe_tcr_to_el2(vhe):
     return el2 | (1 << 23) | (1 << 31)
 
 
+def vhe_tcr_el2_regime(vhe):
+    """compat/vhe-tcr.h vhe_tcr_el2_regime: the non-VHE value with T0SZ 16
+    (AAVMF, 48 bits) raised to the Apple 47-bit 17 that the pauth
+    signing helper requires (compat/pauth-native.S, T0SZ 17..24). _start installs
+    this value, so it is the TCR_EL2 secondary_prepare_records compares."""
+    el2 = vhe_tcr_to_el2(vhe)
+    if el2 & 63 == 16:
+        el2 = (el2 & ~63) | 17
+    return el2
+
+
 def output_mask(tcr):
     """Descriptor output address bits for a non-VHE TCR_EL2 PS of 44 or 48 bits."""
     return (1 << (44 if (tcr >> 16) & 7 == 4 else 48)) - 4096
@@ -36,7 +47,7 @@ def validate_regime(memory):
         # VHE entry: TTBR1 walks must be off (EPD1), or the switch would drop a live half.
         if not (tcr >> 23) & 1:
             raise ValueError('unsupported primary EL2 memory regime')
-        tcr = vhe_tcr_to_el2(tcr)
+        tcr = vhe_tcr_el2_regime(tcr)
     if (sctlr & 0x1005 != 0x1005 or not 16 <= tcr & 63 <= 20 or (tcr >> 14) & 3 or
             (tcr >> 8) & 63 != 0x35 or (tcr >> 16) & 7 not in (4, 5) or
             ttbr & ~output_mask(tcr) or not ttbr):
