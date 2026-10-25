@@ -27,6 +27,14 @@ int clock_rate_init(struct clock_rate *rate, uint64_t host_hz, uint64_t guest_hz
  * SNAP_CLOCK_DILATION): the monitor times its waits and scales the guest counter
  * with the declared rate, so guest time runs K times slower than wall time.
  * The A16 declares its physical 19.2 MHz: K = 1, the rate unchanged. */
+/* A declared host rate the monitor's own waits accept: at least 1 kHz and at
+ * most the u32 clock_rate limit. 1 GHz was the old ceiling, which a dilated
+ * QEMU rate (4 x 1 GHz) exceeded: secondary_collect then quarantined every
+ * stop at once (snaplab p3 run3, run10: 0x51554e01, report unpublished). */
+static inline int clock_host_hz_valid(uint64_t hz)
+{
+    return hz >= 1000 && hz <= UINT32_MAX;
+}
 static inline unsigned clock_host_dilation(uint64_t physical_hz, uint64_t declared_hz)
 {
     if (!physical_hz || !declared_hz || declared_hz % physical_hz) return 0;

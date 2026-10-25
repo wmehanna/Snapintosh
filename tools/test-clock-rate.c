@@ -46,6 +46,9 @@ int main(void)
     CHECK(clock_host_dilation(19200000,24000000)==0);           /* not a multiple */
     CHECK(clock_host_dilation(24000000,19200000)==0);           /* slower than physical */
     CHECK(clock_host_dilation(0,24000000)==0 && clock_host_dilation(24000000,0)==0);
+    CHECK(clock_host_hz_valid(19200000) && clock_host_hz_valid(1000000000));
+    CHECK(clock_host_hz_valid(4000000000u) && clock_host_hz_valid(UINT32_MAX));   /* dilated QEMU */
+    CHECK(!clock_host_hz_valid(999) && !clock_host_hz_valid((uint64_t)UINT32_MAX+1));
     {   /* Dilated by 4, a guest second takes four physical seconds. */
         struct clock_rate d;
         CHECK(clock_rate_init(&d,4000000000u,24000000)==0);

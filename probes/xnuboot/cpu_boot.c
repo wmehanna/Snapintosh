@@ -418,7 +418,7 @@ static int secondary_collect(struct context *c)
     struct vcpu *v=vcpu_of(c);
     if(guest_service_reusable(&c->services))return 1;
     uint64_t hz=c->params->clock_host_hz;
-    if(v->slot || !c->secondary_base || hz<1000 || hz>1000000000)goto quarantine;
+    if(v->slot || !c->secondary_base || !clock_host_hz_valid(hz))goto quarantine;
     uint64_t started=service_profile_clock();
     struct early_stop_state retirement_stop={0};
     const struct a16_thermal_io thermal_io={c,thermal_read,thermal_clock};
