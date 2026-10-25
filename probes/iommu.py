@@ -50,7 +50,8 @@ def validate_apf_memory(slices, excluded):
             low = item.first & ~0x3fff
             high = (item.last | 0x3fff)+1
             if low < base+size and base < high:
-                raise ValueError(f'{item.path}: APF device slice overlaps owned memory')
+                raise ValueError(f'{item.path}: APF device slice {low:#x}..{high:#x} overlaps '
+                                 f'owned memory {base:#x}..{base + size:#x}')
 
 
 def populate_dart_apf_exceptions(dt, spec, devices, dram_base, excluded):

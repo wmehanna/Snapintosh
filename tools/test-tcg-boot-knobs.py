@@ -23,7 +23,7 @@ def qemu_command(env):
             'subprocess.Popen = P\n'
             'from pathlib import Path\n'
             'q = run.Qemu.__new__(run.Qemu); q.sock = "/tmp/x.sock"; q.esp = Path("/tmp/esp")\n'
-            'q.log = Path("/dev/null"); q.proc = None\n'
+            'q.log = Path("/dev/null"); q.proc = None; q.drive = "format=raw,file=fat:rw:/tmp/esp"\n'
             'q.__enter__()\n')
     return subprocess.run([sys.executable, '-c', code], cwd=ROOT, capture_output=True, text=True,
                           env={**os.environ, **env})
@@ -73,6 +73,34 @@ class ClockDilation(unittest.TestCase):
                 run.host_timebase(19200000, value)
         with self.assertRaisesRegex(ValueError, 'above 32 bits'):
             run.host_timebase(1000000000, '5')
+
+
+class QuarantineOnQemu(unittest.TestCase):
+    """SNAP_QEMU_READ_QUARANTINED: a QEMU-only way past an ownership quarantine."""
+    def setUp(self):
+        self.saved = run.ON_QEMU
+
+    def tearDown(self):
+        run.ON_QEMU = self.saved
+
+    def test_ok_terminal_is_unchanged(self):
+        for on in (False, True):
+            run.ON_QEMU = on
+            self.assertFalse(run.terminal_or_qemu_diagnostic(0, {}))
+
+    def test_quarantine_stands_on_hardware_and_by_default(self):
+        cases = [(False, {'SNAP_QEMU_READ_QUARANTINED': '1'}), (True, {}),
+                 (True, {'SNAP_QEMU_READ_QUARANTINED': '0'})]
+        for on, env in cases:
+            run.ON_QEMU = on
+            with self.assertRaises(run.XnubootQuarantined, msg=str((on, env))):
+                run.terminal_or_qemu_diagnostic(0x51554e01, env)
+
+    def test_qemu_opt_in_reads_the_report(self):
+        run.ON_QEMU = True
+        self.assertTrue(run.terminal_or_qemu_diagnostic(0x51554e01, {'SNAP_QEMU_READ_QUARANTINED': '1'}))
+        with self.assertRaises(RuntimeError):         # a malformed terminal is never excused
+            run.terminal_or_qemu_diagnostic('x', {'SNAP_QEMU_READ_QUARANTINED': '1'})
 
 
 if __name__ == '__main__':

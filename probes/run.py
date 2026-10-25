@@ -23,7 +23,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'probes'))
 from bootcontract import HostRuntime
-from xnuboot_terminal import require_xnuboot_terminal
+from xnuboot_terminal import require_xnuboot_terminal, XnubootQuarantined
 from devicemodel import MODEL_MAX, RESET_WORDS
 import monitor_work
 import qemu_preload
@@ -77,6 +77,49 @@ def host_timebase(timer_hz, dilation=None):
     return hz
 
 
+# Set by main() for --qemu: the target is an emulator, so a quarantined monitor
+# (xnuboot_terminal.py) protects no hardware and its report may still be read.
+ON_QEMU = False
+
+
+def terminal_or_qemu_diagnostic(result, environ=os.environ):
+    """require_xnuboot_terminal, except that under --qemu with
+    SNAP_QEMU_READ_QUARANTINED=1 an ownership quarantine is reported and the
+    caller goes on to read the stop report. On the A16 the quarantine stands:
+    there an unresolved executor may still own RAM or a bus. Returns True when
+    the report is read despite a quarantine."""
+    try:
+        require_xnuboot_terminal(result)
+        return False
+    except XnubootQuarantined as error:
+        if not (ON_QEMU and environ.get('SNAP_QEMU_READ_QUARANTINED') == '1'):
+            raise
+        print(f'  {error}')
+        print('  QEMU diagnostic (SNAP_QEMU_READ_QUARANTINED=1): reading the report anyway; '
+              'executors may still be live, so shared state can be torn')
+        return True
+
+
+VVFAT_LIMIT = 504 << 20   # QEMU vvfat hard-disk geometry: 1024 x 16 x 63 sectors
+
+
+def esp_image(folder, image):
+    """SNAP_QEMU_ESP_IMAGE=1: the ESP folder as a FAT32 image file, rebuilt each
+    launch (mkfs.fat + mcopy). vvfat (fat:rw:) caps the disk at 504 MiB, which
+    a preloaded BaseSystem (1.8 GB, SNAP_QEMU_PRELOAD_FILES) does not fit.
+    The image is read-only to the run: cache refreshes still go to the folder."""
+    files = [p for p in Path(folder).rglob('*') if p.is_file()]
+    need = sum(p.stat().st_size for p in files)
+    size_mib = max(64, (need * 105 // 100 >> 20) + 64)
+    Path(image).unlink(missing_ok=True)
+    mkfs = shutil.which('mkfs.fat') or '/usr/sbin/mkfs.fat'
+    subprocess.run([mkfs, '-F', '32', '-C', str(image), str(size_mib * 1024)], check=True,
+                   capture_output=True)
+    subprocess.run(['mcopy', '-s', '-Q', '-i', str(image), *map(str, sorted(Path(folder).iterdir())),
+                    '::/'], check=True, capture_output=True)
+    return image
+
+
 class Qemu:
     """q1n1 under QEMU, as a control.
 
@@ -98,6 +141,11 @@ class Qemu:
         # when asked for, so a default run keeps the original UART-only path.
         if not qemu_preload.enabled(os.environ):
             qemu_preload.remove(self.esp)
+        else:
+            qemu_preload.sync(self.esp, os.environ)
+        self.drive = f'format=raw,file=fat:rw:{self.esp}'
+        if os.environ.get('SNAP_QEMU_ESP_IMAGE') == '1':
+            self.drive = f'format=raw,file={esp_image(self.esp, root / "build" / "qemu-esp.img")}'
         self.sock = f'/tmp/snapintosh-proxy-{os.getpid()}.sock'
         self.log = root / 'build' / 'qemu.log'
         self.proc = None
@@ -110,7 +158,7 @@ class Qemu:
              # physical memory for the image, its tables and the handoff, and
              # virt starts RAM at 0x40000000. -cpu max is what supplies FEAT_NV2.
              '-accel', 'tcg', '-cpu', QEMU_CPU, '-smp', QEMU_SMP, '-m', QEMU_MEM,
-             '-bios', FIRMWARE, '-drive', f'format=raw,file=fat:rw:{self.esp}',
+             '-bios', FIRMWARE, '-drive', self.drive,
              # q1n1 refuses to run without a framebuffer; ramfb is what the
              # q1n1 QEMU harness uses.
              '-device', 'ramfb',
@@ -1115,6 +1163,12 @@ def conclude(entered, fault, console, log, tally=None, dropped=0,
 FOUR_GIB = 1 << 32
 
 
+def free_summary(free, count=6):
+    """The largest free spans, for a loader refusal: '; largest free: lo..hi (N MiB), ...'."""
+    spans = sorted(free, key=lambda r: r[1] - r[0], reverse=True)[:count]
+    return '; largest free: ' + ', '.join(f'{lo:#x}..{hi:#x} ({(hi - lo) >> 20} MiB)' for lo, hi in spans)
+
+
 def free_region(proxy, info, need, xb_align=0x2000000, required_base=None, exclude=()):
     """The largest free physical span the target reports, big enough for `need`.
 
@@ -1340,7 +1394,7 @@ def run_xnuboot(proxy, info, code, guest_profile='j700ap-26A428',
             # happens next is evidence about the wrong machine.
             return verdict(EXIT_LOADER,
                            f'no free region of {need >> 20} MiB in the '
-                           f"target's memory map")
+                           f"target's memory map" + free_summary(monitor_work.firmware_free(proxy, info)))
         start, end = region
         fb = host.framebuffer
         xb.place(start, end - start, guest_span=guest_span,
@@ -1819,7 +1873,7 @@ def run_xnuboot(proxy, info, code, guest_profile='j700ap-26A428',
                            stage_generation=info['stage_generation']), output, indent=2)
     result = proxy.call(code, out, work, work_size, built['params_pa'], host_cpus,
                         timeout=call_timeout)
-    require_xnuboot_terminal(result)  # before any report/peer/ANS read or cleanup
+    terminal_or_qemu_diagnostic(result)  # before any report/peer/ANS read or cleanup
     if qcc_record is not None:
         # The card may still master the bus. The launcher turns that off once the
         # stopped state is preserved (cycle_lib/installed_fresh.py qcc2072_stop),
@@ -3270,6 +3324,8 @@ def main():
 
     blob = build(args.probe, ROOT / 'build')
     if args.qemu:
+        global ON_QEMU
+        ON_QEMU = True
         with Qemu(ROOT) as sock:
             proxy = connect(sock)
             try:
