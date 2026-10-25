@@ -37,7 +37,18 @@ static void xnuboot_restore_host(struct context *c, int shared_safe)
 #if SNAP_LEAN_TRAPS == 2
     lean_fgt_restore(c, vcpu_of(c));
 #endif
-    __asm__ volatile("msr hcr_el2, %0" :: "r"(vcpu_of(c)->save_hcr));
+    if ((vcpu_of(c)->save_hcr & (1UL << 34)) && vhe_tcr_bridge(vcpu_of(c)->save_tcr)) {
+        /* VHE entry (QEMU AAVMF): _start moved TCR_EL2 to the non-VHE layout
+         * (compat/vhe-tcr.h); undo it through the same bridge, in reverse.
+         * Under E2H=1, _start's `mrs tcr_el1` read TCR_EL2, so save_tcr is
+         * the entry TCR_EL2. */
+        __asm__ volatile("msr tcr_el2, %0; isb; msr hcr_el2, %1; isb; msr tcr_el2, %2; isb;"
+                         "tlbi alle2; dsb sy; isb"
+                         :: "r"(vhe_tcr_bridge(vcpu_of(c)->save_tcr)), "r"(vcpu_of(c)->save_hcr),
+                            "r"(vcpu_of(c)->save_tcr) : "memory");
+    } else {
+        __asm__ volatile("msr hcr_el2, %0" :: "r"(vcpu_of(c)->save_hcr));
+    }
     __asm__ volatile("msr vmpidr_el2, %0" :: "r"(vcpu_of(c)->save_vmpidr));
     if (vcpu_of(c)->clock_saved) {
         __asm__ volatile("msr cntkctl_el1, %0" :: "r"(vcpu_of(c)->save_cntkctl));

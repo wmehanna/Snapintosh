@@ -114,6 +114,21 @@ _start:
      * a fault during that has to land somewhere that can report. */
     adr x7, vectors
     msr vbar_el2, x7
+    /* Entered under VHE (HCR_EL2.E2H set: QEMU's AAVMF; the A16 enters with it
+     * clear)? Then TCR_EL2 has to change layout together with E2H below, or
+     * q1n1's tables above 4 GiB fault at the next TLB miss: compat/vhe-tcr.h.
+     * x25 (sctlr, already saved) holds the converted value, zero otherwise;
+     * x24 (tpidr, already saved) the bridge valid in both layouts. */
+    mov x25, xzr
+    tbz x23, #34, 1f
+    mrs x0, tcr_el2
+    bl xnuboot_vhe_tcr_bridge
+    cbz x0, 1f                          /* TTBR1 live: no bridge, leave as is */
+    mov x24, x0
+    mrs x0, tcr_el2
+    bl xnuboot_vhe_tcr
+    mov x25, x0
+1:
     /* RW: AArch64 guest. TVM/TRVM: XNU's MMU registers never reach the hardware
      * in either direction. VM: stage 2.
      *
@@ -139,8 +154,34 @@ _start:
                                          * denied rather than discovered */
     orr x8, x8, #1                      /* VM    */
     orr x8, x8, #(1 << 14)              /* TWE: virtual event stream */
+    cbz x25, 2f
+    /* Bridge first, so every fetch in between walks a valid TCR in whichever
+     * layout is live, then E2H, then the plain non-VHE value. */
+    msr tcr_el2, x24
+    isb
     msr hcr_el2, x8
     isb
+    msr tcr_el2, x25
+    isb
+    tlbi alle2
+    dsb sy
+    isb
+    /* The boot CPU's FP, as the A16 firmware leaves it and as cpu_boot.c gives
+     * every PSCI secondary: CPACR_EL1.FPEN = 0b11, CPTR_EL2.TFP = 0. AAVMF's own
+     * enable went to CPTR_EL2 through the VHE alias, so the real CPACR_EL1 is
+     * still at reset and XNU's first `mrs FPCR` (mac17p ...c269558) trapped to
+     * EL1 (snaplab run5: ESR_EL1 0x1fe00000, EC 0x7). */
+    mrs x9, cpacr_el1
+    orr x9, x9, #(3 << 20)
+    msr cpacr_el1, x9
+    mrs x9, cptr_el2
+    bic x9, x9, #(1 << 10)
+    msr cptr_el2, x9
+    isb
+    b 3f
+2:  msr hcr_el2, x8
+    isb
+3:
 
     bl xnuboot_prepare
     str x0, [x19, #OUT_STATUS]

@@ -33,6 +33,7 @@
 #include "dockchannel.h"
 #include "idregs.h"
 #include "../compat/pauth.h"
+#include "../compat/vhe-tcr.h"
 #include "../compat/pauth-user.h"
 #include "../compat/pauth-domain.h"
 #include "../compat/pauth-switch.h"
