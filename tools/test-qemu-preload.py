@@ -183,6 +183,64 @@ check(not (esp / qp.EFI_DIR / qp.BLOB).exists() and not (esp / qp.EFI_DIR / qp.M
       and not (folder / qp.INDEX).exists(), 'remove deletes blob, manifest and index')
 check(qp.enabled({'SNAP_QEMU_PRELOAD': '1'}) and not qp.enabled({}), 'the cache is opt-in')
 
+# 9. SNAP_QEMU_PRELOAD_FILES: whole files (the BaseSystem) share the one manifest.
+work = Path(tempfile.mkdtemp())
+disk = work / 'basesystem.apfs'
+disk.write_bytes(os.urandom(3 * 4096 + 5))
+digest = hashlib.sha256(disk.read_bytes()).hexdigest()
+env = {qp.EXTRA_ENV: str(disk)}
+rows = qp.extras(env)
+check(rows == [(disk.resolve(), f'file-{digest[:16]}.bin', disk.stat().st_size, digest)],
+      'an extra file is named by its content')
+check((work / 'basesystem.apfs.sha256').read_text().split()[2] == digest, 'its digest is cached beside it')
+(work / 'basesystem.apfs.sha256').write_text(f'{disk.stat().st_size} {disk.stat().st_mtime_ns} {"ab" * 32}\n')
+check(qp.extras(env)[0][3] == 'ab' * 32, 'a matching size and mtime reuse the cached digest')
+os.utime(disk, ns=(disk.stat().st_atime_ns, disk.stat().st_mtime_ns + 10**9))
+check(qp.extras(env)[0][3] == digest, 'a changed mtime rehashes')
+esp2 = work / 'qemu-esp'
+files = qp.sync(esp2, env)
+placed = esp2 / qp.EFI_DIR / f'file-{digest[:16]}.bin'
+check(files == [(f'\\Snapintosh\\file-{digest[:16]}.bin', disk.stat().st_size, digest)]
+      and placed.read_bytes() == disk.read_bytes(), 'sync without a chunk cache lists only the file')
+check(os.stat(placed).st_ino == os.stat(disk).st_ino, 'the file is hard linked, not copied')
+saved_environ = dict(os.environ)
+os.environ.update(env)
+try:
+    index2 = qp.write(esp2, {0x1000_0000: A})
+finally:
+    os.environ.clear(); os.environ.update(saved_environ)
+listed = eval((esp2 / qp.EFI_DIR / qp.MANIFEST).read_bytes()[len(b'manifest:'):])
+check(listed == [(qp.EFI_BLOB, index2['blob_size'], index2['blob_sha256']),
+                 (f'\\Snapintosh\\file-{digest[:16]}.bin', disk.stat().st_size, digest)],
+      'a cache refresh keeps the extra file in the manifest')
+check(qp.sync(esp2, env) == listed, 'sync with a warm cache lists the blob and the file')
+check(qp.sync(esp2, {}) == listed[:1] and not placed.exists(), 'dropping the variable unlinks the stale file')
+(esp2 / qp.EFI_DIR / qp.BLOB).unlink()
+check(qp.sync(esp2, {}) == [] and not (esp2 / qp.EFI_DIR / qp.MANIFEST).exists(),
+      'no blob and no files: no manifest')
+check(qp.sync(foreign, env) is None, 'a foreign manifest is never synced')
+try:
+    qp.extras({qp.EXTRA_ENV: ':'.join([str(disk)] * 16)})
+    check(False, 'more than 15 extra files are refused')
+except ValueError:
+    check(True, 'more than 15 extra files are refused')
+if real is not None:
+    qp._manifest = real
+    raw = qp._manifest(qp.manifest_files(index2, qp.extras(env)))
+    check(f'file-{digest[:16]}.bin'.encode('utf-16-le') in raw or f'file-{digest[:16]}.bin'.encode() in raw,
+          'the real q1n1 manifest encodes the extra path')
+    qp._manifest = lambda files: b'manifest:' + repr(files).encode()
+# 10. SNAP_QEMU_ESP_IMAGE: the folder as a FAT32 image (vvfat stops at 504 MiB).
+import shutil, subprocess                                        # noqa: E402
+import run as runmod                                             # noqa: E402
+if shutil.which('mcopy') and (shutil.which('mkfs.fat') or Path('/usr/sbin/mkfs.fat').exists()):
+    qp.sync(esp2, env)
+    img = runmod.esp_image(esp2, work / 'esp.img')
+    listing = subprocess.run(['mdir', '-b', '-i', str(img), '::/Snapintosh'], capture_output=True, text=True).stdout
+    check(img.exists() and 'q1n1-preload.bin' in listing and f'file-{digest[:16]}.bin' in listing,
+          'the ESP image holds the ESP folder')
+else:
+    print('SKIP  ESP image (mtools/dosfstools absent)')
 failed = [label for ok, label in checks if not ok]
 print(f'{len(checks) - len(failed)}/{len(checks)} passed')
 sys.exit(1 if failed else 0)

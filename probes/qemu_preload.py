@@ -21,6 +21,9 @@ Stale or absent caches therefore cost time, never correctness.
 import argparse
 import hashlib
 import json
+import os
+import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -40,6 +43,87 @@ COPY_STEP = 8 << 20                  # same bound as q1n1 preload.copy_cached
 PENDING = None
 
 
+# SNAP_QEMU_PRELOAD_FILES: host files q1n1 also preloads whole, colon separated,
+# for run.py's EFI RAMDisk cache (cached_files, matched by size and SHA-256):
+# the 1.8 GB BaseSystem never crosses the 43 KiB/s proxy. They are hard linked
+# (or copied) into the ESP folder and listed in the same manifest, because q1n1
+# accepts exactly one manifest across all volumes (q1n1 platform/uefi/preload.c).
+EXTRA_ENV = 'SNAP_QEMU_PRELOAD_FILES'
+EXTRA_PREFIX = 'file-'
+
+
+def extras(environ):
+    """[(host path, ESP name, size, sha256)] for SNAP_QEMU_PRELOAD_FILES. The
+    digest is cached beside the file, keyed by size and mtime."""
+    rows = []
+    for name in filter(None, environ.get(EXTRA_ENV, '').split(':')):
+        path = Path(name).resolve()
+        stat = path.stat()
+        side = path.with_name(path.name + '.sha256')
+        key = f'{stat.st_size} {stat.st_mtime_ns}'
+        cached = side.read_text().split() if side.exists() else []
+        if cached[:2] == key.split():
+            digest = cached[2]
+        else:
+            h = hashlib.sha256()
+            with path.open('rb') as f:
+                for block in iter(lambda: f.read(8 << 20), b''):
+                    h.update(block)
+            digest = h.hexdigest()
+            side.write_text(f'{key} {digest}\n')
+        rows.append((path, f'{EXTRA_PREFIX}{digest[:16]}.bin', stat.st_size, digest))
+    if len(rows) + 1 > 16:                       # Q1N1_PRELOAD_MAX, with the blob
+        raise ValueError(f'{EXTRA_ENV}: at most 15 files')
+    return rows
+
+
+def place_extras(esp, rows):
+    """Link each extra file into the ESP folder under its content name; drop stale ones."""
+    folder = Path(esp) / EFI_DIR
+    folder.mkdir(parents=True, exist_ok=True)
+    wanted = {name for _, name, _, _ in rows}
+    for old in folder.glob(EXTRA_PREFIX + '*'):
+        if old.name not in wanted:
+            old.unlink()
+    for path, name, size, _ in rows:
+        target = folder / name
+        if target.exists() and target.stat().st_size == size:
+            continue
+        target.unlink(missing_ok=True)
+        try:
+            os.link(path, target)
+        except OSError:
+            shutil.copyfile(path, target)
+
+
+def manifest_files(index, rows):
+    """The manifest rows: the chunk blob (when cached) and every extra file."""
+    files = [(EFI_BLOB, index['blob_size'], index['blob_sha256'])] if index else []
+    return files + [(f'\\{EFI_DIR}\\{name}', size, digest) for _, name, size, digest in rows]
+
+
+def sync(esp, environ):
+    """Before QEMU starts: place the extra files and rewrite our manifest so it
+    lists the current blob (if any) and them. A foreign manifest is left alone."""
+    esp = Path(esp)
+    if not ours(esp):
+        return None
+    rows = extras(environ)
+    place_extras(esp, rows)
+    try:
+        index = json.loads((esp.parent / INDEX).read_text())
+    except (OSError, ValueError):
+        index = None
+    if index and not (esp / EFI_DIR / BLOB).exists():
+        index = None
+    files = manifest_files(index, rows)
+    if files:
+        (esp / EFI_DIR / MANIFEST).write_bytes(_manifest(files))
+    else:
+        (esp / EFI_DIR / MANIFEST).unlink(missing_ok=True)
+    return files
+
+
 def _manifest(files):
     sys.path.insert(0, str(ROOT.parent / 'q1n1' / 'tools'))
     import preload
@@ -55,7 +139,11 @@ def ours(esp):
     path, \\Snapintosh\\q1n1-preload.bin, which the RAMDisk preload uses too
     (q1n1/platform/uefi/preload.h), so a foreign manifest is never touched."""
     path = Path(esp) / EFI_DIR / MANIFEST
-    return not path.exists() or EFI_BLOB.encode('ascii') in path.read_bytes()
+    if not path.exists():
+        return True
+    raw = path.read_bytes()
+    # Our names, each after a path separator: the chunk blob or a content-named extra file.
+    return re.search(rb'\\(qemu-chunks\.bin|file-[0-9a-f]{16}\.bin)', raw) is not None
 
 
 def remove(esp):
@@ -95,9 +183,12 @@ def write(esp, chunks, min_chunk=MIN_CHUNK):
             offset += len(data)
     if not entries:
         remove(esp)
+        sync(esp, os.environ)
         return None
     index = dict(blob_sha256=whole.hexdigest(), blob_size=offset, entries=entries)
-    (folder / MANIFEST).write_bytes(_manifest([(EFI_BLOB, offset, index['blob_sha256'])]))
+    rows = extras(os.environ)
+    place_extras(esp, rows)
+    (folder / MANIFEST).write_bytes(_manifest(manifest_files(index, rows)))
     (esp.parent / INDEX).write_text(json.dumps(index))
     return index
 
