@@ -21,9 +21,10 @@ static unsigned long checks;
     fprintf(stderr, "%s:%d: CHECK(%s) failed\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
 
 /* --- the monitor's layout check ------------------------------------------ */
+/* The A16's measured geometry, as the host passes it (compat/gic-layout.h). */
 static int layout(uint64_t boot, uint64_t mask, const uint64_t a[6], const uint64_t r[6])
 {
-    return boot_relocate_layout_valid(boot, mask, a, r);
+    return boot_relocate_layout_valid(boot, mask, a, r, 0x17080000, 0x17500000, 0x40000);
 }
 static void test_layout(void)
 {

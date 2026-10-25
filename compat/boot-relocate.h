@@ -78,12 +78,10 @@
 
 #ifndef __ASSEMBLER__
 #include <stdint.h>
+#include "gic-layout.h"
 
 #define BOOT_RELOCATE_AFFINITY UINT64_C(0xff00ffffff)
 #define BOOT_RELOCATE_CLUSTER UINT64_C(0xff00ff0000)    /* Aff3 and Aff2 */
-#define BOOT_RELOCATE_GICR_FIRST UINT64_C(0x17080000)
-#define BOOT_RELOCATE_GICR_END UINT64_C(0x17500000)
-#define BOOT_RELOCATE_GICR_STRIDE UINT64_C(0x40000)
 /* The ID registers both CPUs read and compare, as X(name, op1, CRn, CRm, op2,
  * shared) with op0 = 3. Only architecturally allocated encodings (Arm ARM,
  * DDI 0487, "ID registers" / the op0=3, op1=0, CRn=0 space), and only ones
@@ -118,11 +116,6 @@ enum boot_relocate_id {
 #define BOOT_RELOCATE_ID_SHARED (UINT64_C(0) BOOT_RELOCATE_ID_REGS(BOOT_ID_SHARED_BIT))
 _Static_assert(BOOT_ID_COUNT <= 64, "one mismatch bit per register");
 
-static inline int boot_relocate_gicr_valid(uint64_t r)
-{
-    return r >= BOOT_RELOCATE_GICR_FIRST && r < BOOT_RELOCATE_GICR_END &&
-           !((r - BOOT_RELOCATE_GICR_FIRST) % BOOT_RELOCATE_GICR_STRIDE);
-}
 
 /* The monitor's check of a relocation request (mask bit 0), in addition to
  * secondary_prepare_records' existing per-secondary checks: a well-formed
@@ -130,12 +123,14 @@ static inline int boot_relocate_gicr_valid(uint64_t r)
  * own, and every enabled vCPU in the target's cluster. */
 static inline int boot_relocate_layout_valid(uint64_t boot, uint64_t mask,
                                              const uint64_t affinity[6],
-                                             const uint64_t redistributor[6])
+                                             const uint64_t redistributor[6],
+                                             uint64_t gicr_first, uint64_t gicr_end,
+                                             uint64_t gicr_stride)
 {
     if (!(mask & BOOT_RELOCATE_MASK)) return 1;
     uint64_t target = affinity[0];
     if ((target & ~BOOT_RELOCATE_AFFINITY) || target == boot ||
-        !boot_relocate_gicr_valid(redistributor[0])) return 0;
+        !gic_redistributor_valid(redistributor[0], gicr_first, gicr_end, gicr_stride)) return 0;
     for (unsigned i = 1; i < 6; i++) {
         if (!(mask & (1u << i))) continue;
         if (affinity[i] == target || redistributor[i] == redistributor[0] ||

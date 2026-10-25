@@ -12,6 +12,7 @@ import struct
 
 ROOT=Path(__file__).resolve().parents[1]
 MAGIC=0x31504d5350414e53
+CONFIG_WORDS=24           # probes/secondary.h struct secondary_config (192 bytes)
 LAYOUT=runpy.run_path(str(ROOT/'tools/monitor_layout.py'))['MonitorLayout']()
 HOST_CPUS_OFFSET=LAYOUT.offset('context','host_cpus')
 SECONDARY_BASE_OFFSET=LAYOUT.offset('context','secondary_base')
@@ -25,8 +26,23 @@ FIELDS=('sctlr','tcr','ttbr0','mair','cpu','stack','affinity','redistributor',
         'observed_sctlr','observed_tcr','observed_ttbr0','observed_mair',
         'active_vncr','active_vmpidr','active_vttbr',
         'initial_cpacr','initial_cptr','final_cpacr','final_cptr')
-PRIME_CLUSTER=0x10000     # SNAP_SMP_PRIME: the A16's first Prime cluster, six cores
 CLUSTER=0xff00ff0000      # MPIDR Aff3:Aff2
+def cluster_cores(inventory,prime):
+    """The host cores vCPU slots 0-5 map to, from the MADT, not a fixed MPIDR layout: the
+    lowest-numbered cluster (Aff3:Aff2) of all enabled cores, or with SNAP_SMP_PRIME=1 of the
+    highest efficiency class, in MPIDR order; slot n is its n-th core. On the A16 that is
+    0x0-0x500 (cluster 0) and 0x10000-0x10500 (the first Prime cluster), the former fixed
+    slot*0x100 and PRIME_CLUSTER+slot*0x100; on QEMU virt (Aff0 numbers the CPUs) 0x0-0x5."""
+    cpus=[c for c in inventory.get('cpus',[]) if c['flags']&1]
+    if prime=='1':
+        classes=[c.get('efficiency_class') for c in cpus]
+        if not cpus or any(type(k) is not int for k in classes):
+            raise ValueError('SNAP_SMP_PRIME: the MADT gives no efficiency classes')
+        cpus=[c for c in cpus if c['efficiency_class']==max(classes)]
+    mpidrs=sorted(int(c['mpidr'],16) for c in cpus)
+    if not mpidrs:raise ValueError('no enabled CPU in the MADT')
+    cluster=mpidrs[0]&CLUSTER
+    return [m for m in mpidrs if m&CLUSTER==cluster]
 # Record page 0 after the 37 record words (probes/xnuboot.c struct boot_relocation, -DSNAP_BOOT_RELOCATE=1):
 # word offsets, checked against Clang's layout by tools/test-boot-relocate.py.
 RELOCATION_WORDS=dict(armed=37,launched=38,handed_back=39,captured=40,launch_tick=41,handback_tick=42,
@@ -81,9 +97,14 @@ def config_words(inventory,memory,mask=2):
     if prime not in ('0','1'):raise ValueError('SNAP_SMP_PRIME must be 0 or 1')
     classes=[c.get('efficiency_class') for c in inventory.get('cpus',[])]
     boot=int(inventory['boot_mpidr'],16)
-    targets={slot:(PRIME_CLUSTER+slot*0x100 if prime=='1' else slot*0x100) for slot in range(1,6) if mask&(1<<slot)}
+    cores=cluster_cores(inventory,prime)
+    if prime=='1':mask|=1
+    if max(n for n in range(6) if mask&(1<<n))>=len(cores):
+        raise ValueError('SNAP_SMP_PRIME: the first cluster of the highest efficiency class has fewer cores '
+                         'than the requested vCPU slots' if prime=='1' else
+                         'the host cluster has fewer cores than the requested vCPU slots')
+    targets={slot:cores[slot] for slot in range(6) if mask&(1<<slot)}
     if prime=='1':
-        targets[0]=PRIME_CLUSTER;mask|=1
         for target in targets.values():
             entry=next((c for c in inventory.get('cpus',[]) if int(c['mpidr'],16)==target),None)
             if (entry is None or entry.get('efficiency_class') is None or
@@ -96,7 +117,9 @@ def config_words(inventory,memory,mask=2):
     for slot,target in sorted(targets.items()):
         api['validate_target'](inventory,target)
         affinity[slot]=target;redistributor[slot]=api['watchdog_target'](inventory,target)
-    return (MAGIC,160,boot,mask,*regime,*affinity,*redistributor)
+    gic=api['gic_geometry'](inventory)
+    return (MAGIC,CONFIG_WORDS*8,boot,mask,*regime,*affinity,*redistributor,
+            gic['gicd'],gic['first'],gic['end'],gic['stride'])
 
 
 def validate_guest_profile(name):
@@ -150,8 +173,11 @@ def prepare(proxy,info,code,code_size,work,work_size,guest_profile):
         proxy,run.build('el2-memory',ROOT/'build/cpu-probe'))
     inventory=runpy.run_path(str(ROOT/'tools/probe-a16-cpus.py'))['collect'](
         proxy,run.build('psci-info',ROOT/'build/cpu-probe'),True)
+    # QEMU virt's GICC records carry no GICR base: match each CPU's frame by GICR_TYPER.
+    runpy.run_path(str(ROOT/'tools/probe-a16-secondary.py'))['fill_redistributors'](inventory,proxy.read64)
     words=config_words(inventory,mem,int(os.environ.get('SNAP_SMP_CPU_MASK','0x3e'),0))
-    gic={};gic_ranges=[('GICD',0x17000000,4096,True)]
+    gicd=words[20]
+    gic={};gic_ranges=[('GICD',gicd,4096,True)]
     for slot in range(6):   # slot 0: vCPU 0's relocated CPU (mask bit 0), started like a secondary
         if not words[3]&(1<<slot):continue
         redist=words[14+slot];target=words[8+slot]
@@ -160,7 +186,7 @@ def prepare(proxy,info,code,code_size,work,work_size,guest_profile):
             active=proxy.read32(redist+0x10300),config=proxy.read32(redist+0x10c04),
             waker=proxy.read32(redist+0x14))
         if (proxy.read64(redist+8)>>32 != target or
-            proxy.read32(0x17000000)&0x80000012 != 0x12 or state['enable'] or
+            proxy.read32(gicd)&0x80000012 != 0x12 or state['enable'] or
             (state['pending']|state['active'])&(1<<26) or state['config']&(1<<21)):
             raise ValueError('secondary GIC is not idle and affinity routed')
         gic[str(slot)]=state
@@ -198,7 +224,7 @@ def prepare(proxy,info,code,code_size,work,work_size,guest_profile):
         ('config',config,4096,False),*ans_ranges,*gic_ranges],ram)
     if proxy.exceptions:raise ValueError('proxy fault during secondary admission')
     for page in witness['table_pages']:proxy.request(proxy.P_DC_CVAC,int(page,16),4096)
-    data=struct.pack('<20Q',*words)
+    data=struct.pack(f'<{CONFIG_WORDS}Q',*words)
     proxy.writemem(config,data);proxy.request(proxy.P_DC_CVAC,config,len(data))
     if proxy.readmem(config,len(data),live=True)!=data:
         raise ValueError('secondary configuration readback mismatch')

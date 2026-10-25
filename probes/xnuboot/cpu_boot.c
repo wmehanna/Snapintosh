@@ -30,7 +30,8 @@ static int secondary_prepare_records(struct context *c)
     if (h->magic!=SECONDARY_MAGIC || h->size!=sizeof(*h) ||
         (mpidr&UINT64_C(0xff00ffffff))!=h->boot_affinity ||
         !h->mask || h->mask&~UINT64_C(0x3f) ||
-        !boot_relocate_layout_valid(h->boot_affinity,h->mask,h->affinity,h->redistributor) ||
+        !boot_relocate_layout_valid(h->boot_affinity,h->mask,h->affinity,h->redistributor,
+                                    h->gicr_first,h->gicr_end,h->gicr_stride) ||
         c->work_end-c->next_table<6*4096+relocate) return 0;
 #else
     if (h->magic!=SECONDARY_MAGIC || h->size!=sizeof(*h) ||
@@ -39,10 +40,11 @@ static int secondary_prepare_records(struct context *c)
         c->work_end-c->next_table<6*4096) return 0;
 #endif
     for (unsigned i=0;i<4;i++) if (regime[i]!=h->regime[i]) return 0;
+    if (!gic_layout_valid(h->gicd,h->gicr_first,h->gicr_end,h->gicr_stride)) return 0;
     for (unsigned i=1;i<6;i++) if (h->mask&(1U<<i)) {
         uint64_t r=h->redistributor[i];
         if (h->affinity[i]&~UINT64_C(0xff00ffffff) || h->affinity[i]==h->boot_affinity ||
-            r<0x17080000 || r>=0x17500000 || (r-0x17080000)%0x40000) return 0;
+            !gic_redistributor_valid(r,h->gicr_first,h->gicr_end,h->gicr_stride)) return 0;
         for (unsigned j=1;j<i;j++) if ((h->mask&(1U<<j)) &&
             (h->affinity[i]==h->affinity[j] || r==h->redistributor[j])) return 0;
     }
@@ -81,7 +83,7 @@ static void secondary_run(struct secondary *s)
     __atomic_store_n(&s->phase,1,__ATOMIC_RELEASE);
     enum guest_service_result arrived=guest_service_arrive(&c->services,v->slot);
     if (arrived!=SERVICE_OK) { s->error=arrived; xnuboot_secondary_stop(); }
-    if (!secondary_gic_start(s)) { s->error=0x100;xnuboot_secondary_stop(); }
+    if (!secondary_gic_start(s,c->host_cpus)) { s->error=0x100;xnuboot_secondary_stop(); }
     __atomic_store_n(&s->phase,2,__ATOMIC_RELEASE);
     uint64_t frame[31]={0};
     if (!runtime_enter(c,frame,c->params->entry,SERVICE_PROFILE_BOOT)) xnuboot_secondary_stop();
@@ -185,7 +187,7 @@ static void boot_relocated_run(struct secondary *s)
         r->target_cntfrq!=c->params->clock_host_hz) {
         s->error=BOOT_RELOCATE_ERROR_CLOCK;xnuboot_relocated_stop();
     }
-    if (!secondary_gic_start(s)) { s->error=0x100;xnuboot_relocated_stop(); }
+    if (!secondary_gic_start(s,c->host_cpus)) { s->error=0x100;xnuboot_relocated_stop(); }
     __atomic_store_n(&s->phase,2,__ATOMIC_RELEASE);
     /* _start's HCR_EL2; vcpu_arch_prepare adds NV/NV2 (and clears TWE). */
     uint64_t hcr=(UINT64_C(1)<<31)|(UINT64_C(1)<<26)|(UINT64_C(1)<<30)|

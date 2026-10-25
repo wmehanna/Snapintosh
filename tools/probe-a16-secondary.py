@@ -47,20 +47,70 @@ def validate_target(inventory, mpidr):
         raise ValueError('target must be declared OFF; start/stop/query must be supported')
 
 
+GICR_SPAN_MAX = 0x4000000      # probe-a16-cpus.py gic_entries' GICR span bound
+def typer_affinity(mpidr):
+    """GICR_TYPER[63:32] (Aff3:Aff2:Aff1:Aff0) for an MPIDR."""
+    return (mpidr & 0xffffff) | ((mpidr >> 32) << 24)
+def fill_redistributors(inventory, read64):
+    """Give every enabled CPU whose MADT GICC record has no GICR base (QEMU
+    virt) the frame whose GICR_TYPER names its affinity, by walking the MADT
+    GICR range as q1n1 platform/uefi/gicv3.c match_redistributor does. CPUs
+    with a GICC GICR base (the A16) keep it. Changes inventory in place."""
+    cpus = [c for c in inventory['cpus'] if c['flags'] & 1]
+    missing = [c for c in cpus if not int(c.get('redistributor', '0x0'), 16)]
+    if not missing:
+        return inventory
+    ranges = inventory.get('gic', {}).get('redistributors', [])
+    if len(ranges) != 1:
+        raise ValueError('GICC records lack redistributors and the MADT has no single GICR range')
+    base, span = int(ranges[0]['base'], 16), ranges[0]['span']
+    frames = {}
+    stride = 0x40000 if read64(base + 8) & 2 else 0x20000    # TYPER.VLPIS: GICv4 frames
+    for frame in range(base, base + span, stride):
+        typer = read64(frame + 8)
+        if typer >> 32 in frames:
+            raise ValueError('two redistributors claim one affinity')
+        frames[typer >> 32] = frame
+        if typer & 0x10:                                       # TYPER.Last
+            break
+    for cpu in missing:
+        frame = frames.get(typer_affinity(int(cpu['mpidr'], 16)))
+        if frame is None:
+            raise ValueError(f"no redistributor for CPU {cpu['mpidr']}")
+        cpu['redistributor'] = hex(frame)
+    return inventory
+def gic_geometry(inventory):
+    """The host GIC layout from the platform's MADT (after fill_redistributors):
+    distributor, redistributor window [first, end) and frame stride. The window
+    is the contiguous run of the CPUs' frames; the A16 MADT gives exactly the
+    former constants (GICD 0x17000000, 0x17080000-0x17500000, 0x40000)."""
+    distributors = inventory.get('gic', {}).get('distributors', [])
+    if len(distributors) != 1:
+        raise ValueError('expected one GIC distributor in the MADT')
+    gicd, version = int(distributors[0]['base'], 16), distributors[0]['version']
+    if version not in (3, 4) or not gicd or gicd % 0x10000:
+        raise ValueError('expected a 64 KiB aligned GICv3 or GICv4 distributor')
+    stride = 0x40000 if version == 4 else 0x20000
+    frames = [int(c.get('redistributor', '0x0'), 16) for c in inventory['cpus']]
+    frames = [f for f in frames if f]
+    if not frames or len(set(frames)) != len(frames):
+        raise ValueError('missing or aliased redistributors')
+    first = min(frames)
+    end = first + len(frames) * stride
+    if (first % 0x10000 or set(frames) != set(range(first, end, stride)) or
+            end - first > GICR_SPAN_MAX or first <= gicd < end):
+        raise ValueError('redistributors are not one contiguous frame run')
+    return dict(gicd=gicd, version=version, stride=stride, first=first, end=end)
 def watchdog_target(inventory, mpidr):
     validate_target(inventory, mpidr)
-    if inventory.get('gic', {}).get('distributors') != [dict(base='0x17000000', version=4)]:
-        raise ValueError('watchdog requires the measured A16 GICv4 distributor')
+    gic = gic_geometry(inventory)
     cpus = inventory['cpus']
     target = next(c for c in cpus if int(c['mpidr'], 16) == mpidr)
     redist = int(target.get('redistributor', '0x0'), 16)
-    if (not 0x17080000 <= redist < 0x17500000 or
-            (redist-0x17080000) % 0x40000 or
+    if (not gic['first'] <= redist < gic['end'] or (redist - gic['first']) % gic['stride'] or
             sum(int(c.get('redistributor', '0x0'), 16) == redist for c in cpus) != 1):
-        raise ValueError('missing, aliased or out-of-range A16 redistributor')
+        raise ValueError('missing, aliased or out-of-range redistributor')
     return redist
-
-
 def watchdog_passed(state, code):
     return (len(state) == 32 and state[0] == 2 and state[7] == 0 and
             state[14] == 26 and state[15] & 5 == 5 and state[17] & 0x3ff == 0x3c5 and
@@ -130,7 +180,7 @@ def main():
             redist = watchdog_target(inventory, args.mpidr)
             typer = proxy.read64(redist+8)
             affinity = (args.mpidr & 0xffffff) | ((args.mpidr >> 32) << 24)
-            control = proxy.read32(0x17000000)
+            control = proxy.read32(gic_geometry(inventory)['gicd'])
             report.update(redistributor=hex(redist), gic_typer=hex(typer),
                           distributor_control=hex(control))
             # With ARE_NS set, Group1A (bit1) is the affinity-routing enable;

@@ -49,7 +49,7 @@ static void guest_stop_secondary(struct secondary *s)
     struct context *c=context_of();struct vcpu *v=vcpu_of(c);
     __atomic_store_n(&s->phase,1,__ATOMIC_RELEASE);
     if(guest_service_arrive(&c->services,v->slot)!=SERVICE_OK)goto fail;
-    if(!secondary_gic_start(s))goto fail;
+    if(!secondary_gic_start(s,c->host_cpus))goto fail;
     __atomic_store_n(&s->phase,2,__ATOMIC_RELEASE);
     if(!runtime_enter(c,0,0,SERVICE_PROFILE_BOOT))goto fail;
     clock_rate_init(&v->clock_rate,c->params->clock_host_hz,c->params->clock_guest_hz);

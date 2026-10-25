@@ -41,6 +41,7 @@
 #include "../compat/pauth-batch.h"
 #include "../compat/pauth-pointer.h"
 #include "secondary.h"
+#include "../compat/gic-layout.h"
 #include "../compat/cpu-release.h"
 #include "../compat/exception.h"
 #include "../compat/panic-state.h"

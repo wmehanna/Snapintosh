@@ -169,7 +169,8 @@ MUTANTS = {
     'target may be q1n1': ('target == boot ||', 'target == ~boot ||'),
     'cross-cluster accepted': (' ||\n            (affinity[i] & BOOT_RELOCATE_CLUSTER) != (target & BOOT_RELOCATE_CLUSTER)', ''),
     'shared redistributor': ('redistributor[i] == redistributor[0] ||', ''),
-    'GICR unchecked': ('!boot_relocate_gicr_valid(redistributor[0])', '0'),
+    'GICR unchecked': ('!gic_redistributor_valid(redistributor[0], gicr_first, gicr_end, gicr_stride)',
+                       '(gicr_first & gicr_end & gicr_stride & 0)'),
     'malformed affinity': ('(target & ~BOOT_RELOCATE_AFFINITY) || ', ''),
     'PFR1 not compared': ('X(ID_AA64PFR1_EL1,  0, 0, 4, 1, 1)', 'X(ID_AA64PFR1_EL1,  0, 0, 4, 1, 0)'),
     'MMFR0 not compared': ('X(ID_AA64MMFR0_EL1, 0, 0, 7, 0, 1)', 'X(ID_AA64MMFR0_EL1, 0, 0, 7, 0, 0)'),
@@ -290,7 +291,7 @@ class Source(unittest.TestCase):
         ordered(run, ['__atomic_store_n(&s->phase,1,__ATOMIC_RELEASE);', 'boot_relocation_ids(r->target_id',
                       'boot_relocate_id_mismatch(r->boot_id,r->target_id)', 'mrs %0, cntvoff_el2',
                       'r->target_cntvoff!=r->boot_cntvoff || r->target_cntfrq!=r->boot_cntfrq',
-                      'r->target_cntfrq!=c->params->clock_host_hz', 'BOOT_RELOCATE_ERROR_CLOCK', 'secondary_gic_start(s)',
+                      'r->target_cntfrq!=c->params->clock_host_hz', 'BOOT_RELOCATE_ERROR_CLOCK', 'secondary_gic_start(s,c->host_cpus)',
                       '__atomic_store_n(&s->phase,2,__ATOMIC_RELEASE);', 'msr hcr_el2', 'msr cpacr_el1, %0; msr cptr_el2, %1',
                       's->prepare_result=(uint64_t)vcpu_arch_prepare(c);', 's->active_vttbr!=vcpu_vttbr(v)',
                       'xnuboot_watchdog(c->params->watchdog_seconds);', 'hcr|24', 's->entered=1;',
@@ -357,7 +358,7 @@ class Source(unittest.TestCase):
                       '        (mpidr&UINT64_C(0xff00ffffff))!=h->boot_affinity ||\n'
                       '        !h->mask || h->mask&~UINT64_C(0x3e) ||\n'
                       '        c->work_end-c->next_table<6*4096) return 0;\n#endif', records)
-        ordered(records, ['h->mask&~UINT64_C(0x3f)', 'boot_relocate_layout_valid(h->boot_affinity,h->mask,h->affinity,h->redistributor)',
+        ordered(records, ['h->mask&~UINT64_C(0x3f)', 'boot_relocate_layout_valid(h->boot_affinity,h->mask,h->affinity,h->redistributor,',
                           '6*4096+relocate', 'c->next_table+=6*4096;', 'if (relocate)', 'c->next_table+=relocate;',
                           'r->record.cpu=(uint64_t)&c->vcpus[0];r->record.stack=c->next_table;',
                           'r->record.callback=(uint64_t)boot_relocated_run;', 'r->armed=1;'])

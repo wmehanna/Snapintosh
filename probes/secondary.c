@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 #include "secondary.h"
+#include "../compat/gic-layout.h"
 static uint32_t r32(uint64_t p) { return *(volatile uint32_t *)p; }
 static void w32(uint64_t p,uint32_t v) { *(volatile uint32_t *)p=v; }
 static void barrier(void) { __asm__ volatile("dsb sy; isb" ::: "memory"); }
@@ -17,7 +18,7 @@ static int wait_clear(uint64_t p,uint32_t mask)
     for (unsigned n=0;n<65535;n++) if (!(r32(p)&mask)) return 1;
     return 0;
 }
-int secondary_gic_start(struct secondary *s)
+int secondary_gic_start(struct secondary *s, const struct secondary_config *h)
 {
     uint64_t r=s->redistributor,g=r+0x10000,mpidr;
     __asm__ volatile("mrs %0, mpidr_el1":"=r"(mpidr));
@@ -30,8 +31,10 @@ int secondary_gic_start(struct secondary *s)
     for (unsigned i=0;i<4;i++) if (s->observed_regime[i]!=s->regime[i]) return 0;
     if ((s->observed_sp&15) || s->observed_sp>=s->stack || s->stack-s->observed_sp>0x10000)
         return 0;
-    if (s->observed_affinity!=s->affinity || r<0x17080000 || r>=0x17500000 ||
-        (r-0x17080000)%0x40000 || (r32(0x17000000)&0x80000012)!=0x12 ||
+    if (s->observed_affinity!=s->affinity ||
+        !gic_layout_valid(h->gicd,h->gicr_first,h->gicr_end,h->gicr_stride) ||
+        !gic_redistributor_valid(r,h->gicr_first,h->gicr_end,h->gicr_stride) ||
+        (r32(h->gicd)&0x80000012)!=0x12 ||
         (*(volatile uint64_t *)(r+8)>>32)!=((s->affinity&0xffffff)|((s->affinity>>32)<<24)))
         return 0;
     s->waker=r32(r+0x14); s->group=r32(g+0x80);
