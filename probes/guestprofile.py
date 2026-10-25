@@ -786,7 +786,24 @@ J700_26A428_XARS_UNIFORM_AUXKC_INSTALLED_ADRENO_METAL_DISPLAY_SKS_QUIET_INPUT_TO
     i2c_input=I2CInputSpec(keyboard=True, touchpad=True),
 )
 
-PROFILES = {p.name: p for p in (J700_26A428, J700_26A428_NO_CLPC,
+# QEMU TCG board (Phase 3, snaplab): the RAM-image board above, without the
+# secure-repair node. AppleSecureRepair waits 45 guest seconds for the GPIO
+# controller with role NUB (gpio-repair_en: provider role 'NUB', pin 0x14) and
+# panics "Invalid service matching" @AppleGPIOICController.cpp:459 when it is
+# late. Under TCG the nub-gpio driver starts after that wait in about half of
+# the boots (p3 run2, run11, run13, run15: /arm-io/nub-gpio model with 0
+# accesses at the panic; run12, run14: 31 reads), with or without clock
+# dilation or -icount. Repair status has no meaning on a virtual board; the
+# node and its consumer are withdrawn, the NUB controller itself stays.
+J700_26A428_NO_CLPC_TCG = replace(
+    J700_26A428_NO_CLPC,
+    name='j700ap-26A428-no-clpc-tcg',
+    deferred_subtrees=J700_26A428_NO_CLPC.deferred_subtrees + (
+        DeferredSubtree('/device-tree/arm-io/secure-repair',
+                        '0bcc48d705aa3296189378f5d199cfec5d5f1a18a77a7e84cdb6a80c19c140be'),
+    ),
+)
+PROFILES = {p.name: p for p in (J700_26A428, J700_26A428_NO_CLPC, J700_26A428_NO_CLPC_TCG,
                                J700_26A428_SEP_PRELOAD, J700_26A428_BOOTFB,
                                J700_26A428_BOOTFB_NUB, J700_26A428_BOOTFB_NO_USB,
                                J700_26A428_BOOTFB_RTC, J700_26A428_BOOTFB_XARS,

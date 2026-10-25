@@ -14,7 +14,7 @@ API=runpy.run_path(str(ROOT/'tools/secondary-runtime.py'))
 class Admission(unittest.TestCase):
     def test_explicit_profile_binding(self):
         import guestprofile as gp
-        for profile in (gp.J700_26A428, gp.J700_26A428_NO_CLPC,
+        for profile in (gp.J700_26A428, gp.J700_26A428_NO_CLPC, gp.J700_26A428_NO_CLPC_TCG,
                         gp.J700_26A428_SEP_PRELOAD, gp.J700_26A428_BOOTFB,
                         gp.J700_26A428_BOOTFB_NUB):
             API['validate_guest_profile'](profile.name)
