@@ -1519,6 +1519,11 @@ def run_xnuboot(proxy, info, code, guest_profile='j700ap-26A428',
     except (OSError, ValueError, RuntimeError) as error:
         return verdict(EXIT_LOADER, f'early stop refused: {error}')
     xb.EARLY_STOP = early
+    if os.environ.get('SNAP_BOOT_ARGS'):
+        # Extra kernel boot arguments for a diagnostic run, e.g. cpus=1 to
+        # reproduce docs/BOOT-CHAIN.md's single-CPU PMGR assertion.
+        xb.BOOT_CMDLINE = f"{xb.BOOT_CMDLINE} {os.environ['SNAP_BOOT_ARGS']}"
+        print(f'  boot arguments: {xb.BOOT_CMDLINE}')
     print('building the image and its address space...')
     try:
         built = xb.build(str(kernelcache), ramdisk=ramdisk, root_hash=root_hash,
@@ -2279,6 +2284,27 @@ def run_xnuboot(proxy, info, code, guest_profile='j700ap-26A428',
         print('\n--- XNU console ---')
         print(console)
         print('-------------------')
+    save = os.environ.get('SNAP_CONSOLE_SAVE')
+    if save:
+        # Both ends of the guest console, which the 1 KiB prefix above cuts off:
+        # the first CONSOLE_LOG_MAX bytes and the CONSOLE_TAIL_MAX ring
+        # (probes/xnuboot/telemetry.c), decoded as tools/capture-console-tail.py
+        # does. Under --qemu the machine is gone after this process exits, so
+        # it is read here, on the same stopped monitor.
+        def context_field(name, size=None):
+            size = size or monitor_layout.length('context', name)
+            offset = monitor_layout.offset('context', name)
+            return b''.join(proxy.readmem(work + offset + i, min(65536, size - i))
+                            for i in range(0, size, 65536))
+        total = struct.unpack('<Q', context_field('console_tail_bytes', 8))[0]
+        ring = context_field('console_tail')
+        head = context_field('console_log', max(8, min(total, monitor_layout.length('context', 'console_log'))))
+        kept = min(total, len(ring))
+        start = (total - kept) % len(ring)
+        Path(f'{save}-head.txt').write_bytes(head[:min(total, len(head))])
+        Path(f'{save}-tail.txt').write_bytes((ring[start:] + ring[:start])[:kept])
+        print(f'  console saved: {total} bytes in all; first {min(total, len(head))} '
+              f'in {save}-head.txt, last {kept} in {save}-tail.txt')
 
     # An explicitly requested diagnostic relay, excluded from guest panel runs.
     if console and relay_panel:
