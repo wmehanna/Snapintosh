@@ -49,9 +49,23 @@ class TcgProfile(unittest.TestCase):
         self.assertFalse(sep.pnon_refusal)
         self.assertIsNotNone(gp.J700_26A428_BASESYSTEM_TCG.sep_preload)
         self.assertFalse(gp.J700_26A428_NO_CLPC_TCG.sep_asc.pnon_recovery)
+    def test_installed_tcg_is_the_a16_installed_board_on_the_tcg_deferrals(self):
+        tcg, base = gp.get_profile('j700ap-26A428-installed-tcg'), gp.J700_26A428_XARS_UNIFORM_AUXKC_INSTALLED
+        self.assertIs(tcg, gp.J700_26A428_INSTALLED_TCG)
+        self.assertEqual(tcg.deferred_subtrees, gp.J700_26A428_BASESYSTEM_TCG.deferred_subtrees)
+        self.assertIn(REPAIR, [d.node for d in tcg.deferred_subtrees])
+        self.assertFalse(tcg.aux_collection_linked)
+        self.assertTrue(tcg.ans_boot.window and tcg.ans_boot.window_guid == gp.P5_WINDOW_PARTITION)
+        self.assertEqual(tcg.ans_boot.disk_bytes, gp.P5_WINDOW_BYTES)
+        # the sealed System snapshot and root hash are the IPSW's, so they are the A16 pins
+        self.assertEqual(tcg.installed_root.root_snapshot_name, base.installed_root.root_snapshot_name)
+        self.assertEqual(tcg.installed_root.payload_sha256, base.installed_root.payload_sha256)
+        self.assertEqual(tcg.trust_cache, base.trust_cache)
+        self.assertEqual(tcg.sep_asc, base.sep_asc)
     def test_other_profiles_keep_secure_repair(self):
         for profile in gp.PROFILES.values():
-            if profile not in (gp.J700_26A428_NO_CLPC_TCG, gp.J700_26A428_BASESYSTEM_TCG):
+            if profile not in (gp.J700_26A428_NO_CLPC_TCG, gp.J700_26A428_BASESYSTEM_TCG,
+                               gp.J700_26A428_INSTALLED_TCG):
                 self.assertNotIn(REPAIR, [d.node for d in profile.deferred_subtrees], profile.name)
 
     @unittest.skipUnless(TREE.exists(), 'audited firmware bundle absent')

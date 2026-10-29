@@ -820,8 +820,33 @@ J700_26A428_BASESYSTEM_TCG = replace(
     name='j700ap-26A428-bootfb-xars-uniform-no-audio-tcg',
     deferred_subtrees=J700_26A428_BOOTFB_XARS_UNIFORM_NO_AUDIO.deferred_subtrees + (SECURE_REPAIR_TCG,),
 )
+# Phase 5b: the installed macOS 26A428 on the QEMU TCG board. The A16 installed board
+# (J700_26A428_XARS_UNIFORM_AUXKC_INSTALLED) with the TCG deferrals the BaseSystem board
+# needs (no audio graph, no secure-repair node), no linked AuxKC (the first boots prove
+# the root and persistence; an AuxKC profile derives from this one), and the pins of the
+# image the Mac made with Virtualization.framework (p5-mac/vzinstall, 26A428 IPSW): its
+# volume UUIDs, and the window disk tools/build-ans-window-disk.py lays out for a
+# QEMU -device nvme (60 GiB window, GUIDs derived from snapintosh://p5-ans/*).
+# The sealed System snapshot is the IPSW's own, so root_snapshot_name and the
+# SystemVolume root hash are the same as on the A16.
+P5_WINDOW_BYTES = 61440 << 20
+P5_WINDOW_PARTITION = '82084ac5-c723-547c-ac50-38cf1d74bb8f'
+J700_26A428_INSTALLED_TCG = replace(
+    J700_26A428_XARS_UNIFORM_AUXKC_INSTALLED,
+    name='j700ap-26A428-installed-tcg',
+    aux_collection_linked=False,
+    deferred_subtrees=J700_26A428_BASESYSTEM_TCG.deferred_subtrees,
+    installed_root=replace(J700_26A428_XARS_UNIFORM_AUXKC_INSTALLED.installed_root,
+                           system_uuid='68C39B23-BA05-4E16-B7C8-AA5B79E8FCB8',
+                           volume_group_uuid='7DD718AF-2E24-4007-8721-9E904476EC02'),
+    ans_boot=replace(J700_26A428_XARS_UNIFORM_AUXKC_INSTALLED.ans_boot,
+                     disk_bytes=P5_WINDOW_BYTES, window_guid=P5_WINDOW_PARTITION,
+                     window_gpt=('6958d7af-f75d-5c39-91ba-a06f27fdf899',
+                                 'da7a2816-24d5-57b3-aeac-faa2af1e7779',
+                                 '9f77b13b-cdd0-5101-9027-9cb497c9ae2e')),
+)
 PROFILES = {p.name: p for p in (J700_26A428, J700_26A428_NO_CLPC, J700_26A428_NO_CLPC_TCG,
-                               J700_26A428_BASESYSTEM_TCG,
+                               J700_26A428_BASESYSTEM_TCG, J700_26A428_INSTALLED_TCG,
                                J700_26A428_SEP_PRELOAD, J700_26A428_BOOTFB,
                                J700_26A428_BOOTFB_NUB, J700_26A428_BOOTFB_NO_USB,
                                J700_26A428_BOOTFB_RTC, J700_26A428_BOOTFB_XARS,
