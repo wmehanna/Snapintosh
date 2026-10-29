@@ -122,8 +122,11 @@ enum sptm_result sptm_mac_unmap_kernel_disjoint(const struct sptm_memory *m,
     if(!data || !im)return SPTM_MEMORY_UNAVAILABLE;
     unsigned lock=(unsigned)im[0]|((unsigned)im[1]<<8);
     if(data[0] || data[1] || (lock&1) || lock>0xfff1)return SPTM_FRAME_BUSY;
+    /* KERNEL_RESTRICTED: a DiskImages cryptex graft (installed boot) retypes its buffers
+     * DEFAULT -> KERNEL_RESTRICTED and removes their kernel mappings through this call
+     * before returning them; sptm_refs_leaf already admits the type for leaves. */
     if(data[2]!=SPTM_MAC_DEFAULT && data[2]!=SPTM_MAC_USER_EXEC &&
-       data[2]!=SPTM_MAC_USER_TPRO)return SPTM_TYPE_MISMATCH;
+       data[2]!=SPTM_MAC_USER_TPRO && data[2]!=SPTM_MAC_KERNEL_RESTRICTED)return SPTM_TYPE_MISMATCH;
     if(im[2]!=SPTM_MAC_DEFAULT && im[2]!=SPTM_MAC_KERNEL_RESTRICTED)
         return SPTM_TYPE_MISMATCH;
     volatile uint8_t *input=m->map(m->ctx,list,count*24),*out=m->map(m->ctx,scratch,bytes);

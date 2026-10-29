@@ -86,6 +86,12 @@ int main(int argc,char **argv)
     prepare(2);put(LIST+32,0x4000);refused(2,DATA,LIST,SCRATCH);
     prepare(2);put(shadow_slot(VA+0x4000),get(shadow_slot(VA+0x4000))+0x1000);
     refused(2,DATA,LIST,SCRATCH);
+    /* The target may be KERNEL_RESTRICTED (cryptex graft buffers); other types still refuse. */
+    prepare(1);ram[FM-BASE+((DATA-BASE)>>14)*16+2]=SPTM_MAC_KERNEL_RESTRICTED;
+    CHECK(!invoke(1,DATA,LIST,SCRATCH));
+    CHECK(get(SCRATCH)==old && !get(leaf_slot(VA)));
+    prepare(1);ram[FM-BASE+((DATA-BASE)>>14)*16+2]=SPTM_MAC_TXM_DEFAULT;refused(1,DATA,LIST,SCRATCH);
+    prepare(1);ram[FM-BASE+((DATA-BASE)>>14)*16+2]=SPTM_MAC_ROZONE;refused(1,DATA,LIST,SCRATCH);
     prepare(1);refused(0,DATA,LIST,SCRATCH);
     prepare(1);refused(65,DATA,LIST,SCRATCH);
     prepare(1);refused(1,DATA+1,LIST,SCRATCH);
