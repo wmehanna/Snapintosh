@@ -2623,6 +2623,10 @@ def run_xnuboot(proxy, info, code, guest_profile='j700ap-26A428',
         kind, pc, a, b, c = last_event[:5]
         print(f'\nlast event (outside the log, never dropped):\n'
               f'  {EVENTS.get(kind, kind):<26} pc {pc:#x}  {a:#x} {b:#x} {c:#x}')
+        if kind in (18, 22, 26, 27, 28) and built.get('frame_map_pa') and built['frame_low'] <= b < built['frame_high']:
+            # The rejected frame's entry in the shared frame map, so a type mismatch names the type found.
+            entry = proxy.readmem(built['frame_map_pa'] + ((b - built['frame_low']) >> 14) * 16, 16)
+            print(f'  {"frame map entry":<26} PA {b & ~0x3fff:#x}: {entry.hex()}  (byte 2 = frame type {entry[2]})')
         last_event, hpfar = stage2_stop_hpfar(last_event)
         if hpfar is not None:
             print(f'  {"hardware IPA (HPFAR_EL2)":<26} {hpfar_ipa(hpfar, c, b):#x}  (HPFAR_EL2 {hpfar:#x}; '
