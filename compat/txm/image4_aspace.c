@@ -88,7 +88,17 @@ enum sptm_result txm_image4(const struct sptm_memory *m,
 {
     enum sptm_result check=image4_stack(m,s,selector,args);
     if(check!=SPTM_OK)return check;
-    if (args[1]!=6 || args[3]!=16) return SPTM_UNSUPPORTED_OPTIONS;
+    if (args[1]!=6) {
+        /* The image4 trap carries several ops (boot uuid, Diavlo root, local
+         * policy). Answering UNSUPPORTED makes the guest log 78 and abort its
+         * trust evaluation, so serve an empty success for them. */
+        volatile uint8_t *view=m->map(m->ctx,args[0],SPTM_MAC_FRAME_SIZE);
+        if(!view)return SPTM_MEMORY_UNAVAILABLE;
+        const uint64_t words[6]={0};
+        reply_words(m,args[0],view,words,0);
+        return SPTM_OK;
+    }
+    if (args[3]!=16) return SPTM_UNSUPPORTED_OPTIONS;
     for (unsigned i=4;i<8;i++) if (args[i]) return SPTM_UNSUPPORTED_OPTIONS;
     if (!args[2] || args[2]>UINT64_MAX-16) return SPTM_BAD_ADDRESS;
     volatile uint8_t *stack=m->map(m->ctx,args[0],SPTM_MAC_FRAME_SIZE);
