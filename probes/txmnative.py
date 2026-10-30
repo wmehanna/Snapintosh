@@ -5,6 +5,7 @@ This changes pointer/PAC ABI and diagnostic/panic transport only. The native
 crypto, parser, identity and policy instructions are retained byte-for-byte.
 """
 import hashlib
+import os
 from pathlib import Path
 import runpy
 import struct
@@ -101,6 +102,60 @@ def relocate(raw, base=LINK_BASE, bridge=None):
                                 kind='panic-transport'))
     return bytes(flat), fixes, patches
 
+VMAPPLE_IDENTITY = (('chip-id', 0xfe00), ('board-id', 0x20),
+                    ('certificate-production-status', 1), ('security-domain', 1))
+
+
+def vmapple_tree(tree):
+    """Copy the boot tree with the vmapple Image4 identity published.
+
+    The installed image comes from Virtualization.framework, so its cryptex
+    apticket is signed for the vmapple board (chip 0xfe00, board 0x20, no
+    ECID) with production status and a security domain. Only the native
+    helper sees this copy; the tree XNU reads stays the J700 one.
+    """
+    from appledt import DeviceTree
+    dt = DeviceTree(tree)
+    chosen = '/device-tree/chosen'
+    if chosen not in dt.nodes:
+        raise ValueError('boot tree has no /device-tree/chosen')
+    for name, value in VMAPPLE_IDENTITY:
+        dt.put(chosen, name, struct.pack('<I', value))
+    return dt.serialize()
+
+
+def tree_debug(tree):
+    """Turn on the TXM library's own /chosen debug-enabled switch."""
+    from appledt import DeviceTree
+    dt = DeviceTree(tree)
+    if '/device-tree/chosen' not in dt.nodes:
+        raise ValueError('boot tree has no /device-tree/chosen')
+    dt.put('/device-tree/chosen', 'debug-enabled', struct.pack('<I', 1))
+    return dt.serialize()
+
+
+ANCHOR_OFFSET = 0x5ff68          # add x16, x16, #imm in the manifest-chain trampoline
+ANCHOR_BEFORE = 0x913df210       # forward to the secure-boot (DDI) verifier
+ANCHOR_AFTER = 0x913f7210        # forward to the Extra Content verifier
+
+
+def extra_content_anchor(image):
+    """Reroute manifest trust evaluation to the Extra Content anchor store.
+
+    The trampoline at 0x5ff60 forwards every manifest check to one of two
+    built-in anchor stores. The installed VZ image's cryptex ticket chains to
+    "Apple Extra Content Global Root CA - G1"; the default store's expected
+    name is "Apple DDI Secure Boot Root CA - G1", so chain verification fails
+    with 0xca302. Only this immediate changes; code and data stay intact.
+    """
+    assert len(image) == IMAGE_BYTES
+    fixed = bytearray(image)
+    before, = struct.unpack_from('<I', fixed, ANCHOR_OFFSET)
+    assert before == ANCHOR_BEFORE, hex(before)
+    struct.pack_into('<I', fixed, ANCHOR_OFFSET, ANCHOR_AFTER)
+    return bytes(fixed), dict(offset=hex(ANCHOR_OFFSET), before=hex(before),
+                              after=hex(ANCHOR_AFTER), kind='anchor-store')
+
 
 def install(proxy, info, image_path, tree, work):
     """Place verified helper code and private state before entering any guest.
@@ -113,6 +168,9 @@ def install(proxy, info, image_path, tree, work):
     image = Path(image_path).read_bytes()
     if len(image) != IMAGE_BYTES or sha(image) != IMAGE_SHA:
         raise ValueError('native Image4 helper differs from the qualified image')
+    anchor = None
+    if os.environ.get('SNAP_TXM_ANCHOR') == 'extracontent':
+        image, anchor = extra_content_anchor(image)
     if not work or work & 0x3fff or work + WORK_BYTES >= 1 << 36 or not 0 < len(tree) <= 0x100000:
         raise ValueError('invalid native Image4 private reservation/tree')
     if info['current_el'] != 2 or info['stage_generation'] < 1 or not proxy.stage_features() & 1:
@@ -152,7 +210,7 @@ def install(proxy, info, image_path, tree, work):
         image_sha256=sha(image), tree_sha256=sha(tree), stage_text_sha256=stage['resident_text_sha256'],
         stage_elf_sha256=stage['elf_sha256'], stage_build=str(stage['build']),
         stage_bin_sha256=stage['bin_sha256'], generation=info['stage_generation'],
-        image=hex(HELPER_BASE), work=hex(work), bytes=WORK_BYTES,
+        image=hex(HELPER_BASE), work=hex(work), bytes=WORK_BYTES, anchor=anchor,
         code=[dict(offset=off,bytes=size,sha256=sha(image[off:off+size]))
               for off,size in ((0x34000,0x5c000),(0x100000,0x300))],
         source_sha256=sha(Path(__file__).read_bytes()),

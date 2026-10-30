@@ -1631,8 +1631,15 @@ def run_xnuboot(proxy, info, code, guest_profile='j700ap-26A428',
             if not xb.GUEST_PROFILE.installed_root or not built['trust_cache'][0]:
                 raise ValueError('native Image4 is qualified only for the installed J700 profile')
             native_work = work + work_size - txmnative.WORK_BYTES
+            native_tree = chunks[xb.DEVICETREE_PA]
+            if os.environ.get('SNAP_TXM_TREE_IDENTITY') == 'vmapple':
+                native_tree = txmnative.vmapple_tree(native_tree)
+            if os.environ.get('SNAP_TXM_TREE_DEBUG'):
+                native_tree = txmnative.tree_debug(native_tree)
+            if os.environ.get('SNAP_TXM_TREE_DUMP'):
+                (ROOT / 'build' / f'{os.environ["SNAP_SMP_REPORT_PREFIX"]}-txm-tree.bin').write_bytes(native_tree)
             built['txm_native'], native_record = txmnative.install(proxy, info,
-                os.environ['SNAP_TXM_NATIVE'], chunks[xb.DEVICETREE_PA], native_work)
+                os.environ['SNAP_TXM_NATIVE'], native_tree, native_work)
             prefix = os.environ.get('SNAP_SMP_REPORT_PREFIX')
             if not prefix:
                 raise ValueError('native Image4 requires a source-bound run prefix')
@@ -3353,6 +3360,19 @@ def run(proxy, blob, probe, where, boot_options=None):
     if not blob or len(blob) > OUT_AT - CODE_AT:
         raise ValueError('probe image exceeds its reserved code region')
     info = proxy.bootinfo()
+    stage = os.environ.get('SNAP_QEMU_STAGE')
+    if ON_QEMU and stage and not info['stage_generation']:
+        # Native Image4 needs a chainloaded stage, as on the A16. The helper
+        # sits at 0xb0600000 in the first slot, so name the second-slot build.
+        chosen, data, link = proxy.pick_stage(stage)
+        print(f'  chainload {chosen.name} at {link:#x} (stage region {info["stage_base"]:#x}'
+              f'+{info["stage_size"] >> 20}M)')
+        proxy.chainload(data)
+        time.sleep(3)
+        proxy.nop()
+        info = proxy.bootinfo()
+        if info['stage_generation'] != 1 or info['image_base'] != link:
+            return verdict(EXIT_LOADER, f'chainload did not answer from {link:#x}')
     print(f'{where}: q1n1 generation {info["stage_generation"]}, EL{info["current_el"]}, '
           f'heap {info["heap_base"]:#x}+{info["heap_size"] >> 20}M')
 
