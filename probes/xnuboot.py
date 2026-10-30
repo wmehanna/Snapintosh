@@ -121,6 +121,14 @@ def configure_guest(name='j700ap-26A428', directory=None):
     current probe; profile selection is per run, not concurrent in one module.
     """
     profile = get_profile(name)
+    if os.environ.get('SNAP_GUEST_IDENTITY') == 'vmapple':
+        # Publish the vmapple Identity the VZ image's ticket is signed for.
+        # The in-kernel Image4 expert reads this /chosen; J700 here makes the
+        # manifest's identity evaluation fail (image4v2_trust_evaluate: 17).
+        from dataclasses import replace
+        profile = replace(profile, chip_id_boot=replace(
+            profile.chip_id_boot, chip_id=0xfe00, board_id=0x20,
+            certificate_production_status=True, security_domain=1))
     if profile.abi != 'sptm-mac-v1':
         raise ValueError(f'unsupported monitor ABI {profile.abi}')
     global GUEST_PROFILE, PROFILE_NAME, PROFILE_TARGET, PROFILE_BUILD
