@@ -2254,6 +2254,7 @@ def build_devicetree(path=None, *, include_deferred=False):
         uniform_cpu_clusters(dt)
     if GUEST_PROFILE.sip_lp_sip0 is not None:
         local_boot_policy(dt, GUEST_PROFILE.sip_lp_sip0)
+    publish_local_policy_smb(dt)
     if GUEST_PROFILE.apfs_without_sep:
         if not GUEST_PROFILE.installed_root:
             raise ValueError('APFS no-SEP setting requires the installed profile')
@@ -2321,6 +2322,35 @@ def local_boot_policy(dt, csr_config):
         if dt.get(LOCAL_POLICY_NODE, prop) is not None:
             raise ValueError(f'firmware tree already sets {prop}')
     dt.add(LOCAL_POLICY_NODE, 'lp-sip0', struct.pack('<Q', csr_config))
+
+
+def publish_local_policy_smb(dt):
+    """Add /chosen/asmb lp-smb0 and lp-smb1, the local policy's measurement
+    block, when SNAP_LOCAL_POLICY_SMB=1.
+
+    The in-kernel Image4 expert's full-security bit (darwinGetFullSecurity)
+    reads both from this IORegistry node and reports 0 only when both reads
+    succeed with a nonzero value. 0 selects the Cryptex1|SplatGlobal
+    environment, whose decode implementation verifies the chain against
+    "Apple Extra Content Global Root CA - G1" -- the root a vmapple ticket
+    chains to -- where Splat uses the DDI root and fails the crack. The
+    shipped node carries neither property, so both reads fail and the bit
+    stays 1. Unset changes nothing.
+
+    Measured 2026-10-31: with both published the boot reaches the cryptex
+    graft and then goes idle right after libignition opens the four objects
+    (p5r31, p5r32), before the trust-cache line, for a reason not yet found.
+    SNAP_IMAGE4_DDI_GLOBAL gets the same anchor selection without the stall,
+    so this stays a lead for the identity route.
+    """
+    if os.environ.get('SNAP_LOCAL_POLICY_SMB') != '1':
+        return
+    if LOCAL_POLICY_NODE not in dt.nodes:
+        raise ValueError('firmware tree has no /chosen/asmb local-policy node')
+    for prop in ('lp-smb0', 'lp-smb1'):
+        if dt.get(LOCAL_POLICY_NODE, prop) is not None:
+            raise ValueError(f'firmware tree already sets {prop}')
+        dt.add(LOCAL_POLICY_NODE, prop, struct.pack('<I', 1))
 
 
 # The first physical addresses XNU maps that are not memory: its serial
@@ -2575,7 +2605,8 @@ def linked_auxkc(image, path):
 
 
 def build(kernelcache, verbose=False, ramdisk=None, root_hash=None, ramdisk_mode='md0', isc_image=None,
-          auxkc=None, trust_additions=None, sysreg_zero=None, refmod_skip=None, user_4k=None, hide_amx=None):
+          auxkc=None, trust_additions=None, sysreg_zero=None, refmod_skip=None, user_4k=None, hide_amx=None,
+          image4_mark=None, image4_ddi_global=None):
     if isc_image is not None and (ramdisk is None or ramdisk_mode != 'iokit'):
         raise ValueError('ISC image requires the authenticated IOKit RAM disk path')
     if root_hash is not None and ramdisk is None and GUEST_PROFILE.installed_root is None:
@@ -2677,6 +2708,34 @@ def build(kernelcache, verbose=False, ramdisk=None, root_hash=None, ramdisk_mode
     if hide_contract:
         print(f'  hide-amx: {len(hide_contract["sites"])} application capability publication sites; '
               'kernel AMXIDR and SME visibility unchanged')
+
+    # Opt-in: the Image4 kext's chain verifier fails silently, so its shared
+    # failure return is marked (probes/image4mark.py) and the kext's own
+    # "failed: %d, %d" line then names the function instead of -1.
+    image4_option = os.environ.get('SNAP_IMAGE4_MARK', '0')
+    if image4_option not in ('0', '1'):
+        raise ValueError('SNAP_IMAGE4_MARK must be 0 or 1')
+    if image4_mark is None:
+        image4_mark = image4_option == '1'
+    elif type(image4_mark) is not bool:
+        raise ValueError('image4_mark must be an explicit boolean')
+    # Opt-in: the Cryptex1|Splat selector is forced onto the Extra Content
+    # Global anchor (probes/image4mark.py), the root a vmapple ticket chains
+    # to, instead of the DDI root it picks when the caller's flag is zero.
+    ddi_option = os.environ.get('SNAP_IMAGE4_DDI_GLOBAL', '0')
+    if ddi_option not in ('0', '1'):
+        raise ValueError('SNAP_IMAGE4_DDI_GLOBAL must be 0 or 1')
+    if image4_ddi_global is None:
+        image4_ddi_global = ddi_option == '1'
+    elif type(image4_ddi_global) is not bool:
+        raise ValueError('image4_ddi_global must be an explicit boolean')
+    image4_contract = None
+    if image4_mark or image4_ddi_global:
+        from image4mark import patch as patch_image4
+        image4_contract = patch_image4(image, data, marks=image4_mark,
+                                       ddi_global=image4_ddi_global)
+        print(f'  image4: {image4_contract["sites"]} edits '
+              f'(closure {image4_contract["closure_sha256"][:16]}...)')
 
 
     tables = Tables(TABLE_PA)
@@ -3368,6 +3427,7 @@ def build(kernelcache, verbose=False, ramdisk=None, root_hash=None, ramdisk_mode
         'kernel_sysreg_zero': sysreg_contract,
         'kernel_refmod_skip': refmod_contract,
         'kernel_user_4k': user4k_contract,
+        'image4_mark': image4_contract,
         'vbar_pa': IMAGE_PA + (XNU_VBAR - image.vmin),
         'scratch_va': scratch_va,
         # The console's register windows, from the tree above: the first
