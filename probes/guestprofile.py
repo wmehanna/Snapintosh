@@ -855,11 +855,13 @@ J700_26A428_INSTALLED_TCG_AUXKC = replace(
 )
 # The same board with the virtual Adreno device, so the linked AdrenoX2 kext in
 # the collection has hardware to match and can start (the next rung after the
-# collection itself is loaded).
+# collection itself is loaded). record_only: TCG has no GPU behind the
+# aperture, so the monitor adopts q1n1's record instead of the power and CB0
+# reads (which all come back zero and used to refuse the boot).
 J700_26A428_INSTALLED_TCG_AUXKC_ADRENO = replace(
     J700_26A428_INSTALLED_TCG_AUXKC,
     name='j700ap-26A428-installed-tcg-auxkc-adreno',
-    adreno=AdrenoSpec(ring_test=False, self_irq=False),
+    adreno=AdrenoSpec(ring_test=False, self_irq=False, record_only=True),
 )
 PROFILES = {p.name: p for p in (J700_26A428, J700_26A428_NO_CLPC, J700_26A428_NO_CLPC_TCG,
                                J700_26A428_BASESYSTEM_TCG, J700_26A428_INSTALLED_TCG,

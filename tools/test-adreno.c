@@ -406,6 +406,35 @@ static void test_stage2(void)
     }
 }
 
+/* The lab board: TCG has no GPU behind the aperture, so every word reads zero.
+ * ADRENO_F_RECORD adopts from q1n1's record instead of those reads; without it
+ * the same words stop at the first CX check. */
+static void test_record_only(void)
+{
+    q1n1_cp_fence();
+    struct adreno_params record = P;
+    memset(&r, 0, sizeof(r));                       /* a GPU that answers nothing */
+    record.flags &= ~ADRENO_F_RECORD;
+    P = record;
+    CHECK(adreno_adopt(&ops, &P, &S, MEM_LOW, MEM_HIGH) == ADRENO_E_CX);
+    q1n1_cp_fence();
+    record = P;
+    record.flags |= ADRENO_F_RECORD;
+    memset(&r, 0, sizeof(r));
+    P = record;
+    CHECK(adreno_adopt(&ops, &P, &S, MEM_LOW, MEM_HIGH) == 0);
+    CHECK((S.status & (ADRENO_S_ADOPTED | ADRENO_S_ATTACHED)) == (ADRENO_S_ADOPTED | ADRENO_S_ATTACHED));
+    CHECK(S.wptr == 22 && S.prepare == 0);
+    /* The mirror is built in real memory even though nothing answers. */
+    CHECK(dev_rd64(ROOT) == ((ROOT + 0x1000) | 3));
+    CHECK(dev_rd64(ROOT + 8) == (POOL | 3));
+    CHECK(smmu_walk(0x40000000, 0) == 0);
+    /* Quiesce proves the detach from the record, not from a CX status word. */
+    adreno_quiesce(&ops, &P, &S);
+    CHECK(S.status & ADRENO_S_QUIESCED);
+    CHECK(dev_rd64(ROOT + 8) == 0);
+}
+
 static void test_adopt(void)
 {
     q1n1_cp_fence();
@@ -469,7 +498,7 @@ static void test_adopt(void)
     bad[0].arena_base = MEM_LOW + 0x100000;
     bad[1].pool_pa = ARENA + ARENA_SIZE - 0x1000;
     bad[2].pool_pa = ROOT - 0x1000;
-    bad[3].flags |= 64;
+    bad[3].flags |= 128;   /* a bit above ADRENO_F_ALL (127) */
     bad[4].fence_va = ADRENO_WINDOW_BASE + 0x80;   /* review: a fence VA in the guest's mirror window */
 #if ADRENO_VA_WIDE
     bad[5].pool_pa = MEM_HIGH - 0x1000;
@@ -1133,6 +1162,7 @@ int main(void)
     test_blocks();
     test_stage2();
     test_adopt();
+    test_record_only();
     test_fence();
     test_guest_fence();
     test_guest_mapping_lifecycle();

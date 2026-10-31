@@ -174,7 +174,10 @@ _Static_assert((ADRENO_PTE_LEAF | ADRENO_PTE_COHERENT_BITS) == ADRENO_PTE_LEAF_C
 #define ADRENO_F_RING     8u   /* monitor test fence at prepare and in the run */
 #define ADRENO_F_TZ_DONE 16u   /* q1n1 already made 0x42002801 on this boot */
 #define ADRENO_F_SELF_IRQ 32u  /* one GICD_ISPENDR self-test of the IRQ path */
-#define ADRENO_F_ALL     63u
+#define ADRENO_F_RECORD  64u   /* the lab's TCG board: no live GPU, adopt from the record's own
+                                * words instead of the power/CB0/SQE/ring reads (a real A16
+                                * register reads as zero there, and every check would refuse) */
+#define ADRENO_F_ALL     127u
 
 /* probes/adreno.py builds this word by word (ADRENO_PARAMS_WORDS). */
 struct adreno_params {

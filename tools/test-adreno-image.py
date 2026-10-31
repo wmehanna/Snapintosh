@@ -90,7 +90,8 @@ class HeaderAgreement(unittest.TestCase):
                  'ADRENO_INTID': adreno.INTID, 'ADRENO_PARAMS_WORDS': adreno.PARAMS_WORDS,
                  'ADRENO_F_ENABLE': adreno.F_ENABLE, 'ADRENO_F_CX_MISC': adreno.F_CX_MISC,
                  'ADRENO_F_DART': adreno.F_DART, 'ADRENO_F_RING': adreno.F_RING,
-                 'ADRENO_F_TZ_DONE': adreno.F_TZ_DONE, 'ADRENO_F_SELF_IRQ': adreno.F_SELF_IRQ}
+                 'ADRENO_F_TZ_DONE': adreno.F_TZ_DONE, 'ADRENO_F_SELF_IRQ': adreno.F_SELF_IRQ,
+                 'ADRENO_F_RECORD': adreno.F_RECORD}
         for name, value in pairs.items():
             self.assertEqual(header_define(name), value, name)
         self.assertEqual(adreno.POOL_BYTES, 0x603000)

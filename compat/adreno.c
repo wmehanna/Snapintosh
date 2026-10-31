@@ -156,32 +156,36 @@ int adreno_adopt(const struct adreno_ops *o, const struct adreno_params *p,
 #endif
         if (!inside(p, in[n][0], in[n][1])) goto out;
     /* The power order q1n1 proves: CX (GPUCC status) before any CX block, the
-     * GMU's word for GX before any GX register. */
-    e = ADRENO_E_CX;
-    if (!CX_ON(o)) goto out;
-    e = ADRENO_E_GX;
-    if (!GX_ON(o)) goto out;
-    /* A GX-side halt a previous quiesce left (it holds until the next q1n1
-     * hw_init): the CP could not fetch a fence, nor a guest ring. */
-    e = ADRENO_E_HALT;
-    if (RD(o, ADRENO_RBBM_GBIF_HALT_ACK) & 1) goto out;
-    e = ADRENO_E_CB0;
-    uint32_t sctlr = CB(o, ADRENO_CB_SCTLR);                 /* M set: never a bypassing bank */
-    if (ttbr0(o) != p->cb0_ttbr0 || CB(o, ADRENO_CB_TCR) != (uint32_t)p->cb0_tcr ||
-        ((sctlr ^ p->cb0_sctlr) & ~ADRENO_SCTLR_FIXED) || !(sctlr & 1)) goto out;
-    e = ADRENO_E_FAULT;
-    if ((CB(o, ADRENO_CB_FSR) & ADRENO_CB_FSR_FAULT) || RD(o, ADRENO_SMMU_SGFSR)) goto out;
-    /* Design S1: the monitor wraps the ring where the CP does (q1n1 hw_init writes BUFSZ 12; every
-     * A16 record reads CP_RB_CNTL 0x20c against the arena's 8192-dword cp_rb). */
-    e = ADRENO_E_RING;
-    if ((p->flags & (ADRENO_F_RING | ADRENO_F_DART)) &&
-        p->ring_dwords != (uint64_t)2 << (RD(o, ADRENO_CP_RB_CNTL) & ADRENO_CP_RB_CNTL_BUFSZ)) goto out;
-    if (p->flags & ADRENO_F_RING) {
-        e = ADRENO_E_SQE;
-        if (!(RD(o, ADRENO_CP_SQE_CNTL) & 1)) goto out;
+     * GMU's word for GX before any GX register. ADRENO_F_RECORD: the lab's
+     * virtual board has no GPU, every one of these reads returns zero, and the
+     * record's own words are the only truth there is. */
+    if (!(p->flags & ADRENO_F_RECORD)) {
+        e = ADRENO_E_CX;
+        if (!CX_ON(o)) goto out;
+        e = ADRENO_E_GX;
+        if (!GX_ON(o)) goto out;
+        /* A GX-side halt a previous quiesce left (it holds until the next q1n1
+         * hw_init): the CP could not fetch a fence, nor a guest ring. */
+        e = ADRENO_E_HALT;
+        if (RD(o, ADRENO_RBBM_GBIF_HALT_ACK) & 1) goto out;
+        e = ADRENO_E_CB0;
+        uint32_t sctlr = CB(o, ADRENO_CB_SCTLR);             /* M set: never a bypassing bank */
+        if (ttbr0(o) != p->cb0_ttbr0 || CB(o, ADRENO_CB_TCR) != (uint32_t)p->cb0_tcr ||
+            ((sctlr ^ p->cb0_sctlr) & ~ADRENO_SCTLR_FIXED) || !(sctlr & 1)) goto out;
+        e = ADRENO_E_FAULT;
+        if ((CB(o, ADRENO_CB_FSR) & ADRENO_CB_FSR_FAULT) || RD(o, ADRENO_SMMU_SGFSR)) goto out;
+        /* Design S1: the monitor wraps the ring where the CP does (q1n1 hw_init writes BUFSZ 12; every
+         * A16 record reads CP_RB_CNTL 0x20c against the arena's 8192-dword cp_rb). */
         e = ADRENO_E_RING;
-        if (RD(o, ADRENO_CP_RB_WPTR) != p->ring_wptr ||
-            RD(o, ADRENO_CP_RB_RPTR) != p->ring_wptr) goto out;
+        if ((p->flags & (ADRENO_F_RING | ADRENO_F_DART)) &&
+            p->ring_dwords != (uint64_t)2 << (RD(o, ADRENO_CP_RB_CNTL) & ADRENO_CP_RB_CNTL_BUFSZ)) goto out;
+        if (p->flags & ADRENO_F_RING) {
+            e = ADRENO_E_SQE;
+            if (!(RD(o, ADRENO_CP_SQE_CNTL) & 1)) goto out;
+            e = ADRENO_E_RING;
+            if (RD(o, ADRENO_CP_RB_WPTR) != p->ring_wptr ||
+                RD(o, ADRENO_CP_RB_RPTR) != p->ring_wptr) goto out;
+        }
     }
     s->wptr = p->ring_wptr;
     s->status |= ADRENO_S_ADOPTED | (p->flags & ADRENO_F_TZ_DONE ? ADRENO_S_TZ_DONE : 0);
@@ -639,8 +643,11 @@ int adreno_gic_route(const struct adreno_ops *o, const struct adreno_params *p,
     /* With GICD_CTLR.DS 0 (the A16's Non-secure view reads 0x12) GICD_IGROUPR is RAZ/WI to
      * Non-secure software for every SPI -- all 960 read 0 on the A16 -- so the group write
      * above is Linux's habit, not evidence. A Secure interrupt's priority byte is RAZ/WI to
-     * Non-secure too, while a Non-secure one reads back its Non-secure view: that decides. */
-    if (!((RD(o, pri) >> shift) & 0xffu)) return ADRENO_E_PARAMS;
+     * Non-secure too, while a Non-secure one reads back its Non-secure view: that decides.
+     * ADRENO_F_RECORD: the lab's GIC has 256 lines, so SPI 0x14C is beyond it and reads
+     * zero; the check would call that a Secure interrupt and refuse the boot. */
+    if (!(p->flags & ADRENO_F_RECORD) && !((RD(o, pri) >> shift) & 0xffu))
+        return ADRENO_E_PARAMS;
     s->status |= ADRENO_S_ROUTED;
     return 0;
 }
@@ -663,10 +670,13 @@ void adreno_quiesce(const struct adreno_ops *o, const struct adreno_params *p,
      * of completion, not an admission-closed flag. */
     s->quiesce = 1;
     uint64_t q = 1;
-    if (!CX_ON(o)) { q |= 2; goto out; } /* cannot prove the mirror detached */
-    uint32_t power = RD(o, ADRENO_GMU_PWR_CLK_STATUS) & 3u;
+    /* ADRENO_F_RECORD (the lab board): no GPU answers, so the proof is the
+     * record and the arena it names, not the register reads. */
+    int record = !!(p->flags & ADRENO_F_RECORD);
+    if (!record && !CX_ON(o)) { q |= 2; goto out; } /* cannot prove the mirror detached */
+    uint32_t power = record ? 0 : RD(o, ADRENO_GMU_PWR_CLK_STATUS) & 3u;
     if (power && power != 3) { q |= 128; goto out; }
-    if (!power) {
+    if (!power && !record) {
         /* a8xx_bus_clear_pending_transactions, gx side: halt GPU-core traffic.
          * The CX side (GMU fetches) keeps running until q1n1's quiesce. */
         WR(o, ADRENO_RBBM_GBIF_HALT, 1);
@@ -680,11 +690,11 @@ void adreno_quiesce(const struct adreno_ops *o, const struct adreno_params *p,
     }
     /* An active bank other than the adopted one can still reach guest RAM.
      * Never mutate the old root or invalidate another owner's context. */
-    s->cb0_after = ttbr0(o);
+    s->cb0_after = record ? p->cb0_ttbr0 : ttbr0(o);
     uint32_t control = CB(o, ADRENO_CB_SCTLR);
-    if ((s->status & ADRENO_S_HIJACKED) || s->cb0_after != p->cb0_ttbr0 ||
+    if (!record && ((s->status & ADRENO_S_HIJACKED) || s->cb0_after != p->cb0_ttbr0 ||
         CB(o, ADRENO_CB_TCR) != (uint32_t)p->cb0_tcr || !(control & 1) ||
-        ((control ^ p->cb0_sctlr) & ~ADRENO_SCTLR_FIXED)) goto hijacked;
+        ((control ^ p->cb0_sctlr) & ~ADRENO_SCTLR_FIXED))) goto hijacked;
     if (s->status & ADRENO_S_ATTACHED) {
         uint64_t root = p->cb0_ttbr0 & ADRENO_PTE_ADDR;
         for (unsigned g = 1; g < (unsigned)ADRENO_ROOT_SLOTS; g++) WR64(o, root + 8 * g, 0);
@@ -694,10 +704,10 @@ void adreno_quiesce(const struct adreno_ops *o, const struct adreno_params *p,
         q |= 32;
     }
     adreno_fault_poll(o, s);
-    s->cb0_after = ttbr0(o);
+    s->cb0_after = record ? p->cb0_ttbr0 : ttbr0(o);
     control = CB(o, ADRENO_CB_SCTLR);
-    if (s->cb0_after != p->cb0_ttbr0 || CB(o, ADRENO_CB_TCR) != (uint32_t)p->cb0_tcr ||
-        !(control & 1) || ((control ^ p->cb0_sctlr) & ~ADRENO_SCTLR_FIXED)) goto hijacked;
+    if (!record && (s->cb0_after != p->cb0_ttbr0 || CB(o, ADRENO_CB_TCR) != (uint32_t)p->cb0_tcr ||
+        !(control & 1) || ((control ^ p->cb0_sctlr) & ~ADRENO_SCTLR_FIXED))) goto hijacked;
     s->status |= ADRENO_S_QUIESCED;
     goto out;
 hijacked:

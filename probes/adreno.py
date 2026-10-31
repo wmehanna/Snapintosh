@@ -69,7 +69,7 @@ def pool_reservation_bytes():
 assert pool_bytes() == POOL_BYTES and pool_bytes(True) == 0x1E0F000
 CHIP_ID = 0x44070041                    # q1n1 Stage 1: 0x44070001 | 4 slices << 4 (PROVEN)
 GICD_A16 = 0x17000000                   # q1n1 gicv3.c: MADT on BIOS312 (PROVEN)
-F_ENABLE, F_CX_MISC, F_DART, F_RING, F_TZ_DONE, F_SELF_IRQ = 1, 2, 4, 8, 16, 32
+F_ENABLE, F_CX_MISC, F_DART, F_RING, F_TZ_DONE, F_SELF_IRQ, F_RECORD = 1, 2, 4, 8, 16, 32, 64
 GPU_NODE = '/device-tree/arm-io/adreno'
 DART_NODE = '/device-tree/arm-io/dart-adreno'
 MAPPER_NODE = DART_NODE + '/mapper-adreno'
@@ -93,10 +93,12 @@ class AdrenoSpec:
     ring_test: bool = True        # Stage 4 monitor fences; off when the guest owns its ring
     display_slot: bool = False    # adreno-display replaces a withdrawn disp0 (display_slot())
     va_wide: bool = False         # ADRENO_VA_WIDE: [1 GiB, 16 GiB), CB0 T0SZ 30, pool outside the arena
+    record_only: bool = False     # ADRENO_F_RECORD: the lab board has no GPU, adopt from the record
 
     def flags(self):
         return (F_ENABLE | (F_CX_MISC if self.cx_misc else 0) | (F_DART if self.dart else 0) |
-                (F_RING if self.ring_test else 0) | (F_SELF_IRQ if self.self_irq else 0))
+                (F_RING if self.ring_test else 0) | (F_SELF_IRQ if self.self_irq else 0) |
+                (F_RECORD if self.record_only else 0))
 
 
 def passthrough(spec):
