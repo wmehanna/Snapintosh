@@ -390,7 +390,8 @@ EVENTS = {1: 'monitor call', 2: 'stage-2 fault', 3: 'XNU took an exception',
           58: 'Adreno GPU recovery (SNAP_ADRENO_RECOVER)',
           59: 'Adreno IO-coherency self-test (SNAP_ADRENO_COHERENT)',
           61: 'native call refused',
-          62: 'EL2 map: GPU aperture block'}
+          62: 'EL2 map: GPU aperture block',
+          63: 'DART monitor state'}
 
 # Why the monitor refused a genter it had already recognised, bit for bit as
 # compat/native-call.h's native_call_why numbers them. A refused call used to
@@ -711,6 +712,10 @@ ASYNC_VECTORS = {0: 'IRQ', 1: 'FIQ', 2: 'SError'}
 # EV_ASYNC's kind: a vector, or probes/xnuboot.c ASYNC_IRQ_OTHER (SNAP_FAST_TIMER_IRQ), an
 # IRQ whose lock-free acknowledge returned, and completed, another INTID than the timer's 26.
 ASYNC_KINDS = {**ASYNC_VECTORS, 3: 'IRQ (its lock-free acknowledge returned another INTID than the timer\'s)'}
+# compat/device.h enum device_result, for EV_DART_STATE's answer word.
+DART_DEVICE_RESULTS = {0: 'DEVICE_OK', 1: 'DEVICE_NOT_FOUND', 2: 'DEVICE_BAD_CONFIG',
+                       3: 'DEVICE_UNKNOWN_REGISTER', 4: 'DEVICE_READ_ONLY',
+                       5: 'DEVICE_BAD_WIDTH', 6: 'DEVICE_BAD_VALUE'}
 # compat/adreno.h block classes (EV_GPU_TRAP c).
 ADRENO_BLOCKS = {1: 'passthrough window', 2: 'CX_MISC (read-only)', 3: 'GMU_GX', 4: 'RDVM',
                  5: 'GMU_AO', 6: 'RSCC', 7: 'SMMU aperture', 8: 'GX clock controller', 9: 'GMU',
@@ -2503,6 +2508,17 @@ def run_xnuboot(proxy, info, code, guest_profile='j700ap-26A428',
             print(f'  {n:>2} {label:<22} guest pc {pc:#x}  '
                   f'{ASYNC_KINDS.get(a, a)} with the EL2 timer not fired  '
                   f'ESR_EL1 {b:#x}  ELR_EL1 {c:#x}')
+        elif kind == 63:
+            # a = the endpoint (0x100|endpoint: the state word), b = the
+            # answer, c = the state words, in probes/xnuboot/report_layout.c.
+            name = DART_DEVICE_RESULTS.get(b, b)
+            if a & 0x100:
+                print(f'  {n:>2} {label:<22} endpoint {a & 0xff:#x}  tcr[0] {(c >> 32) & 0xff:#x} '
+                      f'tcr[1] {c & 0xff:#x}  error {(c >> 32) & 0xff} ttbr {bool((c >> 16) & 1)} '
+                      f'faults {c & 0xffff}')
+            else:
+                print(f'  {n:>2} {label:<22} endpoint {a:#x}  answer {name}  '
+                      f'initialized_ids {(c >> 32) & 0xffffffff:#x} powered_ids {c & 0xffffffff:#x}')
         elif kind == 10:
             # a = reason, with the level a walk stopped at in bits 15:8.
             # b = the VA being mapped, c = detail, whose meaning is per reason.

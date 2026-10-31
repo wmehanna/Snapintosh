@@ -291,10 +291,22 @@ static int monitor_call_impl(struct context *c, uint64_t *frame, uint64_t *elr)
         record(c,EV_MONITOR,*elr,x16,frame[0],frame[1]);
         unsigned index;
         unsigned level=endpoint==0 ? (unsigned)frame[3] : (endpoint==2 || endpoint==3) ? 2 : 0;
-        if (frame[0]>=32 || frame[1]>=2 || (endpoint==0 && frame[3]>2) ||
+        enum device_result admitted =
+            (frame[0]>=32 || frame[1]>=2 || (endpoint==0 && frame[3]>2)) ? DEVICE_BAD_VALUE :
             device_dart_admit_frame(c->params->models,c->model_state,
-                (unsigned)c->params->model_count,5,(unsigned)frame[0],
-                (unsigned)frame[1],level,&index)!=DEVICE_OK) return 0;
+                (unsigned)c->params->model_count,5,(unsigned)frame[0],(unsigned)frame[1],level,&index);
+        /* Why a DART call was admitted or refused, before the answer leaves
+         * this function: the Adreno board's first map stops the run on the
+         * refusal, and without this the transcript could only say the log
+         * overflowed. a = the state words that admit checks, b = its answer. */
+        const struct dart_state *ds = admitted == DEVICE_OK && index < c->params->model_count
+            ? &c->model_state[index].dart : 0;
+        record(c,EV_DART_STATE,*elr,endpoint,(uint64_t)(int64_t)admitted,
+               ds ? ((uint64_t)ds->initialized_ids << 32) | ds->powered_ids : 0);
+        if (ds) record(c,EV_DART_STATE,*elr,0x100|endpoint,
+                       ((uint64_t)(ds->tcr[0]&0xff) << 32) | (ds->tcr[1]&0xff),
+                       ((uint64_t)(ds->error?1:0) << 32) | ((uint64_t)(ds->ttbr[0]?1:0) << 16) | (ds->faults & 0xffff));
+        if (admitted != DEVICE_OK) return 0;
         struct sptm_memory memory=sptm_context_memory(c);
         enum sptm_result result=endpoint==0 ?
             sptm_dart_map_table(&memory,&c->model_state[index].dart,
@@ -328,6 +340,7 @@ static int monitor_call_impl(struct context *c, uint64_t *frame, uint64_t *elr)
                 (unsigned)c->params->model_count,frame[0]) :
             device_dart_monitor_powerup(c->params->models,c->model_state,
                 (unsigned)c->params->model_count,frame[0]);
+        record(c,EV_DART_STATE,*elr,endpoint,(uint64_t)(int64_t)result,frame[0]);
         if (result != DEVICE_OK) return 0;
         /* Both services are void. The kernel control wrapper supplies its
          * own success status; x1..x7 are not inputs. */

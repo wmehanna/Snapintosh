@@ -231,6 +231,11 @@ struct event {
 #define EV_EL2_MAP   62       /* probes/xnuboot/el2_map.c, once at prepare: pc = the block's base
                                * (0x03C00000), a = its size (2 MiB), c = 1 written, 0 already
                                * covered, negative the walker refused the regime */
+#define EV_DART_STATE 63      /* a T8110_DART call, decided before the answer leaves
+                               * probes/xnuboot/sptm_dispatch.c: pc = the guest's call site,
+                               * a = the endpoint, b = device_dart's answer (0 or DEVICE_*),
+                               * c = initialized_ids<<32 | powered_ids once admitted (a=0x100|endpoint
+                               * carries tcr[0]<<32 | tcr[1] and error/ttbr/faults in c instead) */
 #define EV_WATCHDOG  6        /* the guest ran too long and was taken back */
 #define EV_DISPATCH_CMD 8     /* a call that is not an endpoint call:
                                * a = command, b = domain, c = the raw x16 */
