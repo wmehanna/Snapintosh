@@ -249,6 +249,32 @@ class Asset(unittest.TestCase):
             with self.assertRaises(ValueError, msg=why):
                 tool.prepare(*args)
 
+    def test_7_autoload_foreign(self):
+        # --allow-foreign names only our bundles and flips every explicit-load
+        # entry: the TCG board's collection carries com.apple.driver.AppleMobileDevice
+        # that kmutil pulled in, and XNU has to publish our personalities.
+        tool = autoload()
+        raw = (ASSET / 'adreno-input.raw.kc').read_bytes()
+        digest = hashlib.sha256(raw).hexdigest()
+        changed, record = tool.prepare(raw, digest, ADRENO, allow_foreign=True)
+        self.assertEqual(len(changed), len(raw))
+        before = Collection(raw).prelink_info()['_PrelinkInfoDictionary']
+        after = Collection(changed).prelink_info()['_PrelinkInfoDictionary']
+        self.assertEqual(sorted(e['CFBundleIdentifier'] for e in after),
+                         sorted(e['CFBundleIdentifier'] for e in before))
+        self.assertEqual(record['foreign_bundles'], [HID])
+        self.assertEqual(sorted(record['flipped_bundles']), sorted([ADRENO, HID]))
+        self.assertEqual(record['changed_byte_count'], 5 * len(record['flipped_bundles']))
+        for entry in after:
+            self.assertIs(entry.get('OSBundleRequireExplicitLoad'), False, entry['CFBundleIdentifier'])
+        # The flag is the only difference, and the strict form still refuses
+        # the same call, so the audited two-kext contract is untouched.
+        for entry_before, entry_after in zip(before, after):
+            self.assertEqual({k: v for k, v in entry_before.items() if k != 'OSBundleRequireExplicitLoad'},
+                             {k: v for k, v in entry_after.items() if k != 'OSBundleRequireExplicitLoad'})
+        with self.assertRaises(ValueError):
+            tool.prepare(raw, digest, ADRENO)
+
     def test_6_kext(self):
         result = subprocess.run([sys.executable, str(ROOT / 'tools/test-snap-i2c-hid-kext.py'), '--kext',
                                  str(ASSET / 'SnapI2CHID.kext')], capture_output=True, text=True, cwd=ROOT)
