@@ -384,3 +384,23 @@ def fixture_record(arena_base=0xFCC00000, generation=6, wide=False):
             'fence': {'pa': memptrs + FENCE_OFF, 'va': 0x10200000 + FENCE_OFF},
             'pool': {'pa': arena_base + 0x1400000, 'size': 0x603000},
             'tz_init_done': True}
+
+
+def record_for_stage(info, wide=False):
+    """The fixture record retargeted at the stage that is booting now.
+
+    q1n1 allocates its GPU arena on every stage, including QEMU's virt machine,
+    and publishes gpu_arena_base/size (32 MiB, 2 MiB aligned, the same shape
+    the fixture assumes), the GIC distributor and the stage generation in
+    bootinfo. Taking those three from `info` makes the record describe this
+    stage, which is exactly what load_adoption checks; the ring, fence, pool
+    and CB0 root stay the fixture's, since no CP was started (tz_init_done
+    false). This is the path for a stage that cannot run a16gpu's hardware
+    pipeline (TCG): a16gpu stops at its GICD registry check there.
+    """
+    record = fixture_record(arena_base=info['gpu_arena_base'],
+                            generation=info['stage_generation'], wide=wide)
+    record['arena']['size'] = info['gpu_arena_size']
+    record['gicd'] = info['gic_distributor']
+    record['tz_init_done'] = False
+    return record

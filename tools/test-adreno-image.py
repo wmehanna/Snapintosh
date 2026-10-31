@@ -191,6 +191,26 @@ class Tree(unittest.TestCase):
             if path != '/device-tree/arm-io':
                 self.assertIn(path, full.nodes)
 
+    def test_stage_retargeted(self):
+        # run.py builds this for a stage that cannot adopt on hardware: arena,
+        # GICD and generation come from live bootinfo, the buffers are the
+        # fixture's, and tz_init_done is false because no CP was started.
+        info = {'gpu_arena_base': 0x4A2000000, 'gpu_arena_size': 32 << 20,
+                'gpu_arena_flags': 2, 'gic_distributor': 0x8000000,
+                'stage_generation': 11}
+        record = adreno.record_for_stage(info)
+        self.assertEqual(adreno.load_adoption(record, info), record)
+        self.assertEqual(record['gicd'], 0x8000000)
+        self.assertEqual(record['stage_generation'], 11)
+        self.assertFalse(record['tz_init_done'])
+        words = adreno.params_words(adreno.AdrenoSpec(ring_test=False, self_irq=False), record)
+        self.assertEqual(len(words), adreno.PARAMS_WORDS)
+        self.assertEqual(words[1], 0x8000000)
+        # The record must still be refused when bootinfo has moved on.
+        moved = dict(info, gpu_arena_base=0x4A4000000)
+        with self.assertRaises(ValueError):
+            adreno.load_adoption(record, moved)
+
     def test_refusals(self):
         xb.configure_guest(FULL)
         xb.place(0x8c0000000, guest_span=8192 << 20)

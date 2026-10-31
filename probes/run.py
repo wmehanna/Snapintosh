@@ -1524,7 +1524,11 @@ def run_xnuboot(proxy, info, code, guest_profile='j700ap-26A428',
             return verdict(EXIT_LOADER, 'an Adreno profile needs SNAP_ADRENO_ADOPT '
                            '(q1n1 tools/a16gpu.py adopt --record FILE, just before the launch)')
         try:
-            record = adreno.load_adoption(path, info, xb.ADRENO_VA_WIDE)
+            # 'synthetic' builds the record from this stage's own bootinfo, for
+            # a stage that cannot run a16gpu's hardware pipeline (TCG).
+            source = (adreno.record_for_stage(info, xb.ADRENO_VA_WIDE)
+                      if path in ('synthetic', 'fixture') else path)
+            record = adreno.load_adoption(source, info, xb.ADRENO_VA_WIDE)
             adreno.check_disjoint(record, [(xb.PHYS_BASE, monitor_end - xb.PHYS_BASE),
                                            *cache_ranges,
                                            (info.get('fb_base', 0), info.get('fb_size', 0))])
