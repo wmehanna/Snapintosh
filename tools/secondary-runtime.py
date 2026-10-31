@@ -124,6 +124,7 @@ def config_words(inventory,memory,mask=2):
 
 def validate_guest_profile(name):
     from guestprofile import (get_profile, J700_26A428, J700_26A428_NO_CLPC, J700_26A428_NO_CLPC_TCG, J700_26A428_BASESYSTEM_TCG, J700_26A428_INSTALLED_TCG,
+                              J700_26A428_INSTALLED_TCG_AUXKC,
                               J700_26A428_SEP_PRELOAD, J700_26A428_BOOTFB,
                               J700_26A428_BOOTFB_NUB, J700_26A428_BOOTFB_NO_USB,
                               J700_26A428_BOOTFB_RTC, J700_26A428_BOOTFB_XARS,
@@ -143,6 +144,7 @@ def validate_guest_profile(name):
                               J700_26A428_XARS_UNIFORM_AUXKC_INSTALLED_ADRENO_METAL_DISPLAY_SKS_QUIET_INPUT,
                               J700_26A428_XARS_UNIFORM_AUXKC_INSTALLED_ADRENO_METAL_DISPLAY_SKS_QUIET_INPUT_TOUCHPAD)
     if get_profile(name) not in (J700_26A428, J700_26A428_NO_CLPC, J700_26A428_NO_CLPC_TCG, J700_26A428_BASESYSTEM_TCG, J700_26A428_INSTALLED_TCG,
+                                J700_26A428_INSTALLED_TCG_AUXKC,
                                 J700_26A428_SEP_PRELOAD, J700_26A428_BOOTFB,
                                 J700_26A428_BOOTFB_NUB, J700_26A428_BOOTFB_NO_USB,
                                 J700_26A428_BOOTFB_RTC, J700_26A428_BOOTFB_XARS,
