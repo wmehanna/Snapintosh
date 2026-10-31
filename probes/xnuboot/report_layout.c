@@ -223,6 +223,11 @@ struct event {
                                   * state << 8 | detail << 16 | DPCD 0x700..0x703 << 24 | mode << 56); pc = the HVC */
 #endif
 #define EV_HANDOFF   7        /* a field of the handoff was read: a = offset */
+#define EV_NATIVE_CALL_REFUSED 61 /* a genter the monitor recognised and then
+                               * refused to return to. a = x16, b = the guest's
+                               * saved SPSR, c = native_call_why's bits, 8 the
+                               * snapshot was never made ready, 9 a step is
+                               * armed, 10 a guard is open, 16 the vector slot */
 #define EV_WATCHDOG  6        /* the guest ran too long and was taken back */
 #define EV_DISPATCH_CMD 8     /* a call that is not an endpoint call:
                                * a = command, b = domain, c = the raw x16 */

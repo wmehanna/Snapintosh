@@ -61,19 +61,42 @@ struct native_call_state {
 struct native_hvc_state { uint64_t calls, rejected, last_pc; };
 _Static_assert(sizeof(struct native_call_state)==96, "native-call capture ABI");
 
+/* Which check refuses a call, one bit per failed one. native_call_return is
+ * this function with "no bits set", so a report and the decision can never
+ * disagree:
+ *   0 the syndrome is not an undefined-instruction exception
+ *   1 the physical entry mode is not EL1h
+ *   2 the saved mode is neither virtual EL2t nor EL2h
+ *   3 the vector slot is not the one that saved mode dictates
+ *   4 the saved SPSR has bits 63:32 set
+ *   5 the saved SPSR carries IL or SS
+ *   6 the call pc is not a kernel address, or is unaligned
+ *   7 the word is not a call encoding
+ * Bits 8 to 10 are the caller's own state and are added there. */
+static inline uint64_t native_call_why(uint64_t vector, uint64_t syndrome,
+    uint64_t saved, uint64_t entry, uint64_t pc, uint32_t word)
+{
+    unsigned mode = saved & 31;
+    uint64_t why = 0;
+    if (syndrome != (UINT64_C(1) << 25)) why |= UINT64_C(1) << 0;
+    if ((entry & 31) != 5) why |= UINT64_C(1) << 1;
+    if (mode != 8 && mode != 9) why |= UINT64_C(1) << 2;
+    if (vector != (mode == 8 ? 0 : 0x200)) why |= UINT64_C(1) << 3;
+    if (saved >> 32) why |= UINT64_C(1) << 4;
+    if (saved & ((UINT64_C(1) << 20) | (UINT64_C(1) << 21))) why |= UINT64_C(1) << 5;
+    if (pc < UINT64_C(0xffff800000000000) || (pc & 3)) why |= UINT64_C(1) << 6;
+    if (!native_call_word(word)) why |= UINT64_C(1) << 7;
+    return why;
+}
+
 /* Hardware proof: with NV+NV2 and NV1 clear, a physical EL1 -> EL1 exception
  * saves virtual EL2t/h. Never ERET from real EL2 using that virtual mode. */
 static inline int native_call_return(uint64_t vector, uint64_t syndrome,
     uint64_t saved, uint64_t entry, uint64_t pc, uint32_t word,
     uint64_t *physical)
 {
-    unsigned mode = saved & 31;
-    if (!physical || syndrome != (UINT64_C(1) << 25) ||
-        (entry & 31) != 5 || (mode != 8 && mode != 9) ||
-        vector != (mode == 8 ? 0 : 0x200) ||
-        (saved >> 32) || (saved & ((UINT64_C(1) << 20) | (UINT64_C(1) << 21))) ||
-        pc < UINT64_C(0xffff800000000000) || (pc & 3) ||
-        !native_call_word(word)) return 0;
+    if (!physical || native_call_why(vector, syndrome, saved, entry, pc, word))
+        return 0;
     *physical = (saved & ~UINT64_C(12)) | 4;
     return 1;
 }

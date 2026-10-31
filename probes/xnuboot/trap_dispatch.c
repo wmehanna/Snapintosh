@@ -199,8 +199,16 @@ static int xnuboot_trap_locked(uint64_t *frame, uint64_t esr, uint64_t *elr)
                  * level. Never infer an interrupt from a stale syndrome. */
                 uint64_t vector = *elr - p->vbar_va, hcr, saved;
                 __asm__ volatile("mrs %0, spsr_el1" : "=r"(saved));
+                /* Only the slot the saved mode dictates is a call. An IRQ,
+                 * FIQ or SError entry leaves ESR_EL1 carrying the previous
+                 * exception, so a stale undefined-instruction syndrome used
+                 * to be taken for a call at a non-sync slot, and the return
+                 * check then refused it. Falling through sends those to the
+                 * ordinary vector handling below, which is where every other
+                 * interrupt entry with a stale syndrome already goes. */
                 if (SNAP_NATIVE_CALLS && g_esr==(1UL<<25) &&
-                    ((saved&31)==8 || (saved&31)==9) && !(g_elr&3) &&
+                    ((saved&31)==8 || (saved&31)==9) &&
+                    vector==((saved&31)==8 ? 0 : 0x200) && !(g_elr&3) &&
                     g_elr>=UINT64_C(0xffff800000000000)) {
                     uint64_t pa=guest_pa(g_elr),physical=0;
                     int call_page=0;
@@ -215,23 +223,23 @@ static int xnuboot_trap_locked(uint64_t *frame, uint64_t esr, uint64_t *elr)
                         struct vcpu *v=vcpu_of(c);
                         struct native_call_state *s=&c->native_calls[v->slot];
                         s->calls++;s->last_pc=g_elr;s->last_word=word;s->last_saved=saved;
-                        /* Why a call is refused, in the reported record's high
-                         * half: bit 0 the state was never made ready, 1 a step
-                         * is armed on this CPU, 2 a guard is open, 3 the
-                         * return-state checks refused (the guest SPSR does not
-                         * fit, or the vector is not the one its mode dictates).
-                         * PSTATE never uses bits 63:32, so the low half stays
-                         * the real physical SPSR. */
-                        int ret = native_call_return(vector,g_esr,saved,physical_spsr,
-                                                     g_elr,word,&physical);
-                        uint64_t why = (s->ready!=1) | ((uint64_t)(v->stepping.active!=0)<<1) |
-                                       ((uint64_t)(v->open_guards!=0)<<2) |
-                                       ((uint64_t)(ret==0)<<3);
-                        if (why) {
+                        /* Why a call is refused: native_call_why's bits, the
+                         * caller's own state at 8 (the snapshot was never made
+                         * ready), 9 (a step is armed on this CPU) and 10 (a
+                         * guard is open), and the vector slot at 16 (a call
+                         * from a stepped vector can land on the other slot). */
+                        uint64_t why = native_call_why(vector,g_esr,saved,physical_spsr,
+                                                       g_elr,word) | ((uint64_t)vector<<16);
+                        if (s->ready!=1) why |= UINT64_C(1) << 8;
+                        if (v->stepping.active) why |= UINT64_C(1) << 9;
+                        if (v->open_guards) why |= UINT64_C(1) << 10;
+                        int ret = !why && native_call_return(vector,g_esr,saved,physical_spsr,
+                                                             g_elr,word,&physical);
+                        if (!ret) {
                             s->rejected++;
                             fill_regs(&v->async_regs,frame,g_esr,g_elr,g_far);
                             v->async_captured=2;
-                            record(c,EV_MONITOR,g_elr,word,saved,physical_spsr|(why<<32));
+                            record(c,EV_NATIVE_CALL_REFUSED,g_elr,frame[16],saved,why);
                             return 1;
                         }
                         s->last_physical=physical;

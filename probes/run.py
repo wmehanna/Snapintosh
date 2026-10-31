@@ -388,7 +388,27 @@ EVENTS = {1: 'monitor call', 2: 'stage-2 fault', 3: 'XNU took an exception',
           55: 'stage-2 fault retried',
           57: 'QCC2072 command register written for the guest',
           58: 'Adreno GPU recovery (SNAP_ADRENO_RECOVER)',
-          59: 'Adreno IO-coherency self-test (SNAP_ADRENO_COHERENT)'}
+          59: 'Adreno IO-coherency self-test (SNAP_ADRENO_COHERENT)',
+          61: 'native call refused'}
+
+# Why the monitor refused a genter it had already recognised, bit for bit as
+# compat/native-call.h's native_call_why numbers them. A refused call used to
+# be logged as a monitor call whose x16 read as 0x201420, so the report called
+# a recognised call an unimplemented endpoint.
+NATIVE_CALL_WHY = ('the syndrome is not an undefined-instruction exception',
+                   'the physical entry mode is not EL1h',
+                   'the saved mode is neither virtual EL2t nor EL2h',
+                   'the vector slot is not the one that mode dictates',
+                   'the saved SPSR has bits above 31 set',
+                   'the saved SPSR carries IL or SS',
+                   'the call pc is not a kernel address, or is unaligned',
+                   'the word is not a call encoding',
+                   'this CPU never took the snapshot the call restores',
+                   'a single step was armed on this CPU',
+                   'a stage-2 guard was open on this CPU')
+
+def native_call_why_words(why):
+    return ', '.join(text for bit, text in enumerate(NATIVE_CALL_WHY) if (why >> bit) & 1)
 
 SPRR_FAILURES = {2:'invalid SPRR register state',
                  3:'permission change needs a shadow transaction',
@@ -623,6 +643,7 @@ EXIT_NAMES = {
 
 EV_MONITOR, EV_S2_FAULT, EV_GUEST_EXC, EV_WATCHDOG = 1, 2, 3, 6
 EV_DISPATCH_CMD, EV_PANIC_ENTRY, EV_MAP_FAILED = 8, 9, 10
+EV_NATIVE_CALL_REFUSED = 61
 EV_MAP_OUTSIDE = 11
 EV_SERROR, EV_ASYNC = 12, 13
 EV_MMIO_STOP = 16
@@ -1075,6 +1096,19 @@ def classify(entered, fault, console, log, tally=None, dropped=0,
         return EXIT_UNSUPPORTED, (
             f'the kernel made dispatch command {cmd:#x} (x16 {x16:#018x}), which '
             f'is not an endpoint call and is not implemented')
+    # A recognised genter the monitor would not return to. The stop is real,
+    # but calling it an unimplemented endpoint is not: the endpoint was read
+    # out of the call's own x16 and is answered everywhere else in the run.
+    if last == EV_NATIVE_CALL_REFUSED:
+        x16, why = tail[2], tail[4]
+        cmd, domain = (x16 >> 56) & 0xff, (x16 >> 48) & 0xff
+        table, fn = (x16 >> 32) & 0xffff, x16 & 0xffffffff
+        slot = (why >> 16) & 0xffff
+        return EXIT_UNSUPPORTED, (
+            f'the monitor recognised a {route_name(domain, table)} endpoint {fn:#x} '
+            f'call at {tail[1]:#x} (x16 {x16:#018x}) and refused to return to it: '
+            f'{native_call_why_words(why) or "no named check failed"}'
+            + (f'; it landed on vector slot {slot:#x}' if slot else ''))
     if last == EV_MONITOR:
         x16 = tail[2]
         cmd, domain = (x16 >> 56) & 0xff, (x16 >> 48) & 0xff
@@ -3526,7 +3560,7 @@ def run(proxy, blob, probe, where, boot_options=None):
                   f'reports TGran16 {tg(real):#x}, and every other field is unchanged.')
         else:
             print('\nTID3 works, but this CPU already has 16K so the forgery is not '
-                  'observable here — run it on the A16 for the real result.')
+                  'observable here, so run it on the A16 for the real result.')
     elif probe == 'tgran16':
         proxy.call(code, out, table)
         hcr, a, b, c, d, mmfr0, expect = struct.unpack('<7Q', proxy.readmem(out, 56))

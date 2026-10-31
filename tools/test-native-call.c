@@ -53,6 +53,24 @@ int main(void)
         CHECK(!native_call_snapshot_required(esr|0x301000,0));
         CHECK(!native_call_snapshot_required(esr|0x300000,0));
     }
+    /* The reported reason is the decision: one bit per failed check, and the
+     * accepted case must carry no bits at all. */
+    for(unsigned op=0;op<2;op++) {
+        const uint64_t saved=8,entry=0x3c5,pc=UINT64_C(0xfffffe000c22a004);
+        uint64_t physical=0;
+        CHECK(native_call_why(0,1UL<<25,saved,entry,pc,words[op])==0);
+        CHECK(native_call_return(0,1UL<<25,saved,entry,pc,words[op],&physical));
+        CHECK(native_call_why(0x200,1UL<<25,saved,entry,pc,words[op])==(1UL<<3));
+        CHECK(native_call_why(0,(1UL<<25)|1,saved,entry,pc,words[op])==(1UL<<0));
+        CHECK(native_call_why(0,1UL<<25,saved,entry,UINT64_C(0x1000),words[op])==(1UL<<6));
+        CHECK(native_call_why(0,1UL<<25,saved|(1UL<<32),entry,pc,words[op])==(1UL<<4));
+        CHECK(native_call_why(0,1UL<<25,saved|(1UL<<21),entry,pc,words[op])==(1UL<<5));
+        CHECK(native_call_why(0,1UL<<25,saved,entry^1,pc,words[op])==(1UL<<1));
+        /* An unknown mode also fails the slot check it cannot dictate. */
+        CHECK(native_call_why(0,1UL<<25,saved|(1UL<<2),entry,pc,words[op])==
+              ((1UL<<2)|(1UL<<3)));
+        CHECK(native_call_why(0,1UL<<25,saved,entry,pc,0xd503201f)==(1UL<<7));
+    }
     printf("PASS %u native-call return-mode, PSTATE and refusal checks\n",checks);
     return 0;
 }

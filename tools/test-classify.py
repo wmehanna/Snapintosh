@@ -1562,6 +1562,24 @@ code, reason = run.classify(1, 0, warning + 'panic(cpu 0): real fault\n', [])
 expect('real panic after a panic-buffer warning is selected', code, run.EXIT_PANIC)
 assert 'real fault' in reason and 'gPanicBase' not in reason, reason
 checks += 2
+# A recognised genter the monitor would not return to got its own event, so a
+# refusal stops being reported as an unimplemented endpoint 0x201420. a is the
+# call's x16 and c is the why mask (compat/native-call.h's bits, the vector
+# slot at 16), and the sentence has to name both the endpoint and the check.
+refusal = (run.EV_NATIVE_CALL_REFUSED, 0xfffffe000c22b530, 2, 0x60402208,
+           (1 << 3) | (0x200 << 16), 0)
+code, reason = run.classify(1, 0, '', [], last_event=refusal)
+expect('a refused native call names its endpoint and its failing check',
+       code, run.EXIT_UNSUPPORTED, reason)
+for want in ('XNU_BOOTSTRAP endpoint 0x2', 'vector slot is not the one that mode dictates',
+             'vector slot 0x200'):
+    assert want in reason, reason
+checks += 1
+code, reason = run.classify(1, 0, '', [],
+                            last_event=(run.EV_NATIVE_CALL_REFUSED, 0xfffffe000c22b530,
+                                        2, 0x60402208, 1 << 9, 0))
+assert 'a single step was armed on this CPU' in reason, reason
+checks += 1
 
 print(f'PASS: {checks} run-classification checks '
       '(no hardware, no proxy, no kernelcache)')
