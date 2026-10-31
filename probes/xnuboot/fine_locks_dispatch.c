@@ -106,9 +106,20 @@ static int fine_dart_call(struct context *c,uint64_t *frame,struct fine_call_sta
     int unmap=s->kind==FINE_CALL_DART_UNMAP;
     t->device_wait[slot][0]=t->device_wait[slot][1]=0;
     /* The token path's admission, read-only; anything else is not this envelope. */
-    if(frame[0]!=SPTM_DART_ADRENO || frame[1] || !(p->gpu.flags & ADRENO_F_DART) ||
-       device_dart_admit_frame(p->models,c->model_state,(unsigned)p->model_count,5,
-                               (unsigned)frame[0],(unsigned)frame[1],2,&index)!=DEVICE_OK) {
+    enum device_result admitted =
+        device_dart_admit_frame(p->models,c->model_state,(unsigned)p->model_count,5,
+                                (unsigned)frame[0],(unsigned)frame[1],2,&index);
+    /* The same answer sptm_dispatch records: under SNAP_FINE_LOCKS this call is
+     * decided here first, and the Adreno board's first map stops the run on the
+     * refusal, so the transcript needs the state words that admit checked. */
+    const struct dart_state *ds = admitted == DEVICE_OK && index < (unsigned)p->model_count
+        ? &c->model_state[index].dart : 0;
+    record(c,EV_DART_STATE,s->elr,unmap?3:2,(uint64_t)(int64_t)admitted,
+           ds ? ((uint64_t)ds->initialized_ids << 32) | ds->powered_ids : 0);
+    if (ds) record(c,EV_DART_STATE,s->elr,0x100|(unmap?3:2),
+                   ((uint64_t)(ds->tcr[0]&0xff) << 32) | (ds->tcr[1]&0xff),
+                   ((uint64_t)(ds->error?1:0) << 32) | ((uint64_t)(ds->ttbr[0]?1:0) << 16) | (ds->faults & 0xffff));
+    if(frame[0]!=SPTM_DART_ADRENO || frame[1] || !(p->gpu.flags & ADRENO_F_DART) || admitted!=DEVICE_OK) {
         s->reason=FINE_NO_SHAPE;return FINE_DECLINE;
     }
     uint64_t start=service_profile_clock();
