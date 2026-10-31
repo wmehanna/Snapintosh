@@ -215,13 +215,23 @@ static int xnuboot_trap_locked(uint64_t *frame, uint64_t esr, uint64_t *elr)
                         struct vcpu *v=vcpu_of(c);
                         struct native_call_state *s=&c->native_calls[v->slot];
                         s->calls++;s->last_pc=g_elr;s->last_word=word;s->last_saved=saved;
-                        if (s->ready!=1 || v->stepping.active || v->open_guards ||
-                            !native_call_return(vector,g_esr,saved,physical_spsr,
-                                                g_elr,word,&physical)) {
+                        /* Why a call is refused, in the reported record's high
+                         * half: bit 0 the state was never made ready, 1 a step
+                         * is armed on this CPU, 2 a guard is open, 3 the
+                         * return-state checks refused (the guest SPSR does not
+                         * fit, or the vector is not the one its mode dictates).
+                         * PSTATE never uses bits 63:32, so the low half stays
+                         * the real physical SPSR. */
+                        int ret = native_call_return(vector,g_esr,saved,physical_spsr,
+                                                     g_elr,word,&physical);
+                        uint64_t why = (s->ready!=1) | ((uint64_t)(v->stepping.active!=0)<<1) |
+                                       ((uint64_t)(v->open_guards!=0)<<2) |
+                                       ((uint64_t)(ret==0)<<3);
+                        if (why) {
                             s->rejected++;
                             fill_regs(&v->async_regs,frame,g_esr,g_elr,g_far);
                             v->async_captured=2;
-                            record(c,EV_MONITOR,g_elr,word,saved,physical_spsr);
+                            record(c,EV_MONITOR,g_elr,word,saved,physical_spsr|(why<<32));
                             return 1;
                         }
                         s->last_physical=physical;
