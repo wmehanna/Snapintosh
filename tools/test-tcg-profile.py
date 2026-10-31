@@ -67,7 +67,8 @@ class TcgProfile(unittest.TestCase):
         # withdrawn list.
         for profile in gp.PROFILES.values():
             if profile not in (gp.J700_26A428_NO_CLPC_TCG, gp.J700_26A428_BASESYSTEM_TCG,
-                               gp.J700_26A428_INSTALLED_TCG, gp.J700_26A428_INSTALLED_TCG_AUXKC):
+                               gp.J700_26A428_INSTALLED_TCG, gp.J700_26A428_INSTALLED_TCG_AUXKC,
+                               gp.J700_26A428_INSTALLED_TCG_AUXKC_ADRENO):
                 self.assertNotIn(REPAIR, [d.node for d in profile.deferred_subtrees], profile.name)
 
     @unittest.skipUnless(TREE.exists(), 'audited firmware bundle absent')
