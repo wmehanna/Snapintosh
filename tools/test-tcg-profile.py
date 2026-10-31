@@ -63,9 +63,11 @@ class TcgProfile(unittest.TestCase):
         self.assertEqual(tcg.trust_cache, base.trust_cache)
         self.assertEqual(tcg.sep_asc, base.sep_asc)
     def test_other_profiles_keep_secure_repair(self):
+        # Including every board derived from one of them, which keeps the same
+        # withdrawn list.
         for profile in gp.PROFILES.values():
             if profile not in (gp.J700_26A428_NO_CLPC_TCG, gp.J700_26A428_BASESYSTEM_TCG,
-                               gp.J700_26A428_INSTALLED_TCG):
+                               gp.J700_26A428_INSTALLED_TCG, gp.J700_26A428_INSTALLED_TCG_AUXKC):
                 self.assertNotIn(REPAIR, [d.node for d in profile.deferred_subtrees], profile.name)
 
     @unittest.skipUnless(TREE.exists(), 'audited firmware bundle absent')

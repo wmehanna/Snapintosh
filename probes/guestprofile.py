@@ -845,8 +845,17 @@ J700_26A428_INSTALLED_TCG = replace(
                                  'da7a2816-24d5-57b3-aeac-faa2af1e7779',
                                  '9f77b13b-cdd0-5101-9027-9cb497c9ae2e')),
 )
+# The same board with one kmutil-linked AuxKC, so a kext can load on this
+# install at all (P5b step 4). The collection is a launch input, not a
+# default: run.py needs --auxkc with build/build-auxkc.py's pinned output.
+J700_26A428_INSTALLED_TCG_AUXKC = replace(
+    J700_26A428_INSTALLED_TCG,
+    name='j700ap-26A428-installed-tcg-auxkc',
+    aux_collection_linked=True,
+)
 PROFILES = {p.name: p for p in (J700_26A428, J700_26A428_NO_CLPC, J700_26A428_NO_CLPC_TCG,
                                J700_26A428_BASESYSTEM_TCG, J700_26A428_INSTALLED_TCG,
+                               J700_26A428_INSTALLED_TCG_AUXKC,
                                J700_26A428_SEP_PRELOAD, J700_26A428_BOOTFB,
                                J700_26A428_BOOTFB_NUB, J700_26A428_BOOTFB_NO_USB,
                                J700_26A428_BOOTFB_RTC, J700_26A428_BOOTFB_XARS,
