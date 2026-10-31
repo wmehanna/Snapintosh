@@ -2048,6 +2048,16 @@ def build_devicetree(path=None, *, include_deferred=False):
     populate_chip_id(dt, GUEST_PROFILE.chip_id_boot)
     populate_board_id(dt, GUEST_PROFILE.chip_id_boot)
     populate_image4_identity(dt, GUEST_PROFILE.chip_id_boot)
+    if os.environ.get('SNAP_GUEST_IDENTITY_EXTRA') == '1':
+        # The rest of the vmapple Image4 identity the in-kernel expert reads.
+        # Values match the VZ image ticket (clas 241, fchp 65296).
+        # cryptex1-chip-id is deliberately left unset: setting it flips the
+        # helper's anchor selection back to the DDI store and the trust cache
+        # fails again (offline bisect, 2026-10-30).
+        for name, value in (('chip-epoch', 1), ('cryptex1-product-class', 241),
+                            ('esdm-fuses', 0), ('pqc-validation-flags', 0),
+                            ('uses-avp-root-ca', 1)):
+            dt.put('/device-tree/chosen', name, struct.pack('<I', value))
     resolved = dt.resolve_placeholders()
     dt.set_u32('/device-tree', 'clock-frequency', TIMEBASE_HZ)
 
