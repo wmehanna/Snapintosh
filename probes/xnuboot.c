@@ -907,6 +907,7 @@ _Static_assert(FAST_EXIT_CLASSES==FAST_TRAP_CLASSES-1+FAST_CROSS_CLASSES &&
 #include "xnuboot/ans_glue.c"
 #include "xnuboot/sptm_retype.c"
 #include "xnuboot/telemetry.c"
+#include "xnuboot/el2_map.c"
 #include "xnuboot/stage2.c"
 #include "xnuboot/setup.c"
 #include "xnuboot/clock_timer.c"

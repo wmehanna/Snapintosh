@@ -77,6 +77,10 @@ int64_t xnuboot_prepare(void)
     struct context *c = context_of();
     const struct params *p = c->params;
     if(!pauth_domain_prepare(c))return -24;
+    /* The EL2 map the firmware left has no GPU aperture on QEMU
+     * (probes/xnuboot/el2_map.c): one Device block, before the first CX or GMU
+     * read, so that read is a word and not a fault. */
+    if (p->gpu.flags && el2_map_gpu_aperture()) return -39;
 #if SNAP_EL0_MEMO
     /* A new master key: every derivation kept in either level is another
      * domain's (pauth_domain_user_cached_wide flushes on the epoch). */

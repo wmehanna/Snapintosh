@@ -237,6 +237,15 @@ uint64_t xnuboot_report(uint64_t *out)
     /* GPU DMA halted and the mirror unlinked before the guest's memory is
      * published and handed back (and so before any chainload). */
     if (!gpu_quiesce(c)) {
+        /* A refusal is reported about, so the words that explain it are copied
+         * here too: the state's status and quiesce bits say which step refused,
+         * and the fault registers say where an EL2 fault (if that is what
+         * stopped the run) was taken. The success path copies both after this
+         * point, which is why they used to read as zero exactly when the
+         * explanation was needed. */
+        for (unsigned n=0;n<ADRENO_STATE_WORDS;n++) out[OUT_GPU_FLOW+n]=((const uint64_t *)&c->gpu)[n];
+        out[OUT_BAD_REGS + 0] = vcpu_of(c)->bad_elr;
+        out[OUT_BAD_REGS + 1] = vcpu_of(c)->bad_far;
         xnuboot_restore_host(c, 1);
         return XNUBOOT_TERMINAL_GPU;
     }

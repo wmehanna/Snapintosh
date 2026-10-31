@@ -389,7 +389,8 @@ EVENTS = {1: 'monitor call', 2: 'stage-2 fault', 3: 'XNU took an exception',
           57: 'QCC2072 command register written for the guest',
           58: 'Adreno GPU recovery (SNAP_ADRENO_RECOVER)',
           59: 'Adreno IO-coherency self-test (SNAP_ADRENO_COHERENT)',
-          61: 'native call refused'}
+          61: 'native call refused',
+          62: 'EL2 map: GPU aperture block'}
 
 # Why the monitor refused a genter it had already recognised, bit for bit as
 # compat/native-call.h's native_call_why numbers them. A refused call used to
@@ -682,6 +683,8 @@ PREPARE_FAILURES = {
     -21: 'static trust-cache payload, reservation or read-only protection is invalid',
     -27: 'SNAP_USER_HW_WALK_S2RO: the stage-2 trees could not be pre-split to level 3 over guest RAM '
          '(out of work area)',
+    -39: 'the EL2 stage-1 map could not be given a Device block for the GPU aperture: the live '
+         'TCR_EL2 is not the 4 KiB, T0SZ-described regime the walker reads (nothing was written)',
     # Stage 4 (compat/adreno.h): adoption of q1n1's GPU, before the guest runs.
     -60: 'Adreno params invalid, or the arena overlaps guest memory, or SPI 0x14C is Secure',
     -61: 'Adreno CX GDSC is off: run the q1n1 bring-up and adopt again',
