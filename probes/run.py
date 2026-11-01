@@ -1310,6 +1310,19 @@ def host_stop_link(proxy):
     return endpoint
 
 
+def host_stop_link_for(proxy, console):
+    """Refuse a host trigger on a link that cannot carry its datagram, unless
+    the two-way console is on: that rides the poll, not the stop datagram, so a
+    console launch over a socket or CDC link still works (and the trigger is
+    simply not deliverable)."""
+    try:
+        return host_stop_link(proxy)
+    except ValueError:
+        if not console:
+            raise
+        return None
+
+
 def run_xnuboot(proxy, info, code, guest_profile='j700ap-26A428',
                 firmware_dir=None, kernelcache=None, console_mode='auto',
                 relay_panel=False, ramdisk=None, root_hash=None, ramdisk_mode='md0', isc_image=None,
@@ -1649,7 +1662,7 @@ def run_xnuboot(proxy, info, code, guest_profile='j700ap-26A428',
             if early.guest and xb.GUEST_PROFILE.adreno is None:
                 raise ValueError('the guest trigger needs an Adreno profile; its kext sends the request')
             if early.host:
-                host_stop_link(proxy)
+                host_stop_link_for(proxy, early.console)
                 early_call = call_service(proxy, info)
                 if not early_call[0]:
                     raise ValueError('this q1n1 stage publishes no call service; chainload one that does')

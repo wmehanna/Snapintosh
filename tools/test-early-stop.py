@@ -213,6 +213,14 @@ class HostLink(unittest.TestCase):
             with self.assertRaises(ValueError, msg=endpoint):
                 run.host_stop_link(self.Proxy(endpoint))
 
+    def test_a_console_launch_keeps_a_link_that_cannot_carry_the_trigger(self):
+        # SNAP_EARLY_STOP=console implies host; the console rides the poll, so
+        # a socket or CDC link is admitted and only the trigger is absent.
+        self.assertIsNone(run.host_stop_link_for(self.Proxy('build/uefi/qemu.sock'), True))
+        self.assertEqual(run.host_stop_link_for(self.Proxy('udp://en5'), True), 'udp://en5')
+        with self.assertRaises(ValueError):
+            run.host_stop_link_for(self.Proxy('build/uefi/qemu.sock'), False)
+
 
 class Tree(unittest.TestCase):
     class Node:
