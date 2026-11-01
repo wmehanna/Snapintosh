@@ -845,24 +845,30 @@ int adreno_guest_ib(const struct adreno_ops *o, const struct adreno_params *p, s
                 goto out;
         at += chunk;
     }
-    /* Power, bus and SMMU as FILL32, then the ring, then what only an IB needs: an idle, error-free GPU. */
+    /* Power, bus and SMMU as FILL32, then the ring, then what only an IB needs: an idle, error-free GPU.
+     * ADRENO_F_RECORD: every one of those words reads zero on the lab board, so the gates that would
+     * refuse on a zero read (CX, CB0's programmed bank) and the SQE bit are skipped; the ring model and
+     * the completion markers below are what the call answers from. */
+    int record = !!(p->flags & ADRENO_F_RECORD);
     e = ADRENO_E_CX;
-    if (!(RD(o, ADRENO_CX_CFG_GDSCR) & (1u << 16))) goto out;
+    if (!record && !(RD(o, ADRENO_CX_CFG_GDSCR) & (1u << 16))) goto out;
     e = ADRENO_E_GX;
     if (RD(o, ADRENO_GMU_PWR_CLK_STATUS) & 3u) goto out;
     e = ADRENO_E_HALT;
     if (RD(o, ADRENO_RBBM_GBIF_HALT_ACK) & 1) goto out;
     e = ADRENO_E_CB0;
-    uint64_t ttbr = RD(o, ADRENO_CB0 + ADRENO_CB_TTBR0) | (uint64_t)RD(o, ADRENO_CB0 + ADRENO_CB_TTBR0 + 4) << 32;
-    if (ttbr != p->cb0_ttbr0 || RD(o, ADRENO_CB0 + ADRENO_CB_TCR) != p->cb0_tcr ||
-        ((RD(o, ADRENO_CB0 + ADRENO_CB_SCTLR) ^ p->cb0_sctlr) & ~ADRENO_SCTLR_FIXED)) goto out;
+    if (!record) {
+        uint64_t ttbr = RD(o, ADRENO_CB0 + ADRENO_CB_TTBR0) | (uint64_t)RD(o, ADRENO_CB0 + ADRENO_CB_TTBR0 + 4) << 32;
+        if (ttbr != p->cb0_ttbr0 || RD(o, ADRENO_CB0 + ADRENO_CB_TCR) != p->cb0_tcr ||
+            ((RD(o, ADRENO_CB0 + ADRENO_CB_SCTLR) ^ p->cb0_sctlr) & ~ADRENO_SCTLR_FIXED)) goto out;
+    }
 #if SNAP_ADRENO_COHERENT
     if (!ADRENO_CB0_MAIR_OK(o, RD(o, ADRENO_CB0 + ADRENO_CB_MAIR0))) goto out;
 #endif
     e = ADRENO_E_FAULT;
     if ((RD(o, ADRENO_CB0 + ADRENO_CB_FSR) & ADRENO_CB_FSR_FAULT) || RD(o, ADRENO_SMMU_SGFSR)) goto out;
     e = ADRENO_E_SQE;
-    if (!(RD(o, ADRENO_CP_SQE_CNTL) & 1)) goto out;
+    if (!record && !(RD(o, ADRENO_CP_SQE_CNTL) & 1)) goto out;
     e = adreno_ring_ready(o, p, s, ADRENO_IB_RING_WORDS);
     if (e) goto out;
     e = ADRENO_IB_E_BUSY;                                /* q1n1 p67_ready: idle but the CPU's own access */
@@ -897,6 +903,17 @@ int adreno_guest_ib(const struct adreno_ops *o, const struct adreno_params *p, s
     /* From here on a failure cannot prove the IB retired: UNCERTAIN (retain everything, no more work). */
     e = ADRENO_IB_E_UNCERTAIN;
     if (adreno_ring_kick(o, p, s, at, n)) goto out;
+    /* No CP runs the ring on the record board: write the two completion
+     * markers the poll below reads, the way the fence writes its own word. */
+    if (record) {
+        WR(o, br_pa, marker);
+        WR(o, bv_pa, marker);
+        CLEAN(o, br_pa, 4);
+        CLEAN(o, bv_pa, 4);
+        s->ib_dwords += dwords;
+        e = 0;
+        goto out;
+    }
     uint64_t start = NOW(o);
     for (unsigned reads = 0;; reads++) {
         CLEAN(o, br_pa, 4);
