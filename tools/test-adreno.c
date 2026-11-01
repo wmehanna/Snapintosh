@@ -429,6 +429,18 @@ static void test_record_only(void)
     CHECK(dev_rd64(ROOT) == ((ROOT + 0x1000) | 3));
     CHECK(dev_rd64(ROOT + 8) == (POOL | 3));
     CHECK(smmu_walk(0x40000000, 0) == 0);
+    /* A guest map is mirrored from the record too: without the flag the zero
+     * GDSC word refuses it (p5r71: the AdrenoX2 kext's first DART map stopped
+     * the run at e -61), with it the page lands. */
+    dart[0] = dart_desc(MEM_LOW + 0x10000, 0, 0x4000, 0, 0);
+    record.flags &= ~ADRENO_F_RECORD;
+    P = record;
+    CHECK(mirror(ADRENO_WINDOW_BASE, 0x4000) == ADRENO_E_CX);
+    record.flags |= ADRENO_F_RECORD;
+    P = record;
+    CHECK(mirror(ADRENO_WINDOW_BASE, 0x4000) == 0);
+    /* four 4 KiB slots in the one 16 KiB window the kernel mapped */
+    CHECK(S.map_pages == 4 && S.live_pages == 4);
     /* Quiesce proves the detach from the record, not from a CX status word. */
     adreno_quiesce(&ops, &P, &S);
     CHECK(S.status & ADRENO_S_QUIESCED);

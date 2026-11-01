@@ -528,7 +528,10 @@ int adreno_mirror(const struct adreno_ops *o, const struct adreno_params *p,
     if (s->quiesce || !(s->status & ADRENO_S_ATTACHED)) return ADRENO_E_PARAMS;
     if (!size || iova < ADRENO_WINDOW_BASE || iova >= ADRENO_WINDOW_END ||
         size > ADRENO_WINDOW_END - iova) return ADRENO_E_WINDOW;
-    if (!CX_ON(o)) return ADRENO_E_CX;
+    /* ADRENO_F_RECORD: the lab board's GPU answers nothing, so the GDSC word
+     * reads zero and would refuse every guest map; the record is the proof the
+     * CX domain is on, as it is for adopt and quiesce. */
+    if (!(p->flags & ADRENO_F_RECORD) && !CX_ON(o)) return ADRENO_E_CX;
     uint64_t first = iova & ~0x3fffUL, end = (iova + size + 0x3fff) & ~0x3fffUL;
     uint64_t arena_end = p->arena_base + p->arena_size;
     int stale = 0;
