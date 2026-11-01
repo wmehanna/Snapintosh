@@ -863,10 +863,28 @@ J700_26A428_INSTALLED_TCG_AUXKC_ADRENO = replace(
     name='j700ap-26A428-installed-tcg-auxkc-adreno',
     adreno=AdrenoSpec(ring_test=False, self_irq=False, record_only=True),
 )
+# Stage 8 on this board: the same AuxKC's AdrenoDisplay, so a swap has a panel
+# to reach. Only the external display graph is withdrawn, the way the metal
+# board's -display profile does it; disp0 stays so IOMobileFramebuffer still
+# counts one display-subsystem entry (see
+# J700_26A428_XARS_UNIFORM_AUXKC_INSTALLED_ADRENO_METAL_DISPLAY).
+J700_26A428_INSTALLED_TCG_AUXKC_ADRENO_DISPLAY = replace(
+    J700_26A428_INSTALLED_TCG_AUXKC_ADRENO,
+    name='j700ap-26A428-installed-tcg-auxkc-adreno-display',
+    deferred_subtrees=J700_26A428_INSTALLED_TCG_AUXKC_ADRENO.deferred_subtrees + (
+        DeferredSubtree('/device-tree/arm-io/dispext0',
+                        '3b2a7757f3b4481326717aa46a2d262dd6e9fd327cc8846610e741ed4678424a'),
+        DeferredSubtree('/device-tree/arm-io/dcpext',
+                        '4e36d72151edc577c1e9a09f5e5a77dd8db734a58e983c9416848e09f495a004'),
+        DeferredSubtree('/device-tree/arm-io/dcpext-expert',
+                        '45ec668374b5244c9ad85eef0b20b73354e51f0f324a45067537f5a0fade86b6'),
+    ),
+)
 PROFILES = {p.name: p for p in (J700_26A428, J700_26A428_NO_CLPC, J700_26A428_NO_CLPC_TCG,
                                J700_26A428_BASESYSTEM_TCG, J700_26A428_INSTALLED_TCG,
                                J700_26A428_INSTALLED_TCG_AUXKC,
                                J700_26A428_INSTALLED_TCG_AUXKC_ADRENO,
+                               J700_26A428_INSTALLED_TCG_AUXKC_ADRENO_DISPLAY,
                                J700_26A428_SEP_PRELOAD, J700_26A428_BOOTFB,
                                J700_26A428_BOOTFB_NUB, J700_26A428_BOOTFB_NO_USB,
                                J700_26A428_BOOTFB_RTC, J700_26A428_BOOTFB_XARS,

@@ -17,6 +17,8 @@ from deferred import defer_subtrees  # noqa: E402
 
 TREE = ROOT / 'downloads/extracted/j700ap/DeviceTree.j700ap'
 REPAIR = '/device-tree/arm-io/secure-repair'
+DISPLAY_GRAPH = ('/device-tree/arm-io/dispext0', '/device-tree/arm-io/dcpext',
+                 '/device-tree/arm-io/dcpext-expert')
 
 
 class TcgProfile(unittest.TestCase):
@@ -62,13 +64,26 @@ class TcgProfile(unittest.TestCase):
         self.assertEqual(tcg.installed_root.payload_sha256, base.installed_root.payload_sha256)
         self.assertEqual(tcg.trust_cache, base.trust_cache)
         self.assertEqual(tcg.sep_asc, base.sep_asc)
+    def test_display_board_withdraws_only_the_external_display_graph(self):
+        display, base = gp.get_profile('j700ap-26A428-installed-tcg-auxkc-adreno-display'), gp.J700_26A428_INSTALLED_TCG_AUXKC_ADRENO
+        self.assertIs(display, gp.J700_26A428_INSTALLED_TCG_AUXKC_ADRENO_DISPLAY)
+        self.assertEqual(display.deferred_subtrees[:len(base.deferred_subtrees)], base.deferred_subtrees)
+        added = display.deferred_subtrees[len(base.deferred_subtrees):]
+        self.assertEqual([d.node for d in added], list(DISPLAY_GRAPH))
+        # same specs the metal board's -display profile was measured on; disp0 stays
+        metal = gp.J700_26A428_XARS_UNIFORM_AUXKC_INSTALLED_ADRENO_METAL_DISPLAY
+        self.assertEqual(added, metal.deferred_subtrees[-len(DISPLAY_GRAPH):])
+        for field in dataclasses.fields(base):
+            if field.name not in ('name', 'deferred_subtrees'):
+                self.assertEqual(getattr(display, field.name), getattr(base, field.name), field.name)
     def test_other_profiles_keep_secure_repair(self):
         # Including every board derived from one of them, which keeps the same
         # withdrawn list.
         for profile in gp.PROFILES.values():
             if profile not in (gp.J700_26A428_NO_CLPC_TCG, gp.J700_26A428_BASESYSTEM_TCG,
                                gp.J700_26A428_INSTALLED_TCG, gp.J700_26A428_INSTALLED_TCG_AUXKC,
-                               gp.J700_26A428_INSTALLED_TCG_AUXKC_ADRENO):
+                               gp.J700_26A428_INSTALLED_TCG_AUXKC_ADRENO,
+                               gp.J700_26A428_INSTALLED_TCG_AUXKC_ADRENO_DISPLAY):
                 self.assertNotIn(REPAIR, [d.node for d in profile.deferred_subtrees], profile.name)
 
     @unittest.skipUnless(TREE.exists(), 'audited firmware bundle absent')
