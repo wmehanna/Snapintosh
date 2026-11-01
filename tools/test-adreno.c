@@ -454,6 +454,11 @@ static void test_record_only(void)
     P = record;
     CHECK(adreno_fence(&ops, &P, &S, 0x534e0001) == 0);
     CHECK(S.fences == 1 && S.wptr == 26);
+    /* Every CP register reads zero on the board: the recorded ring size and the
+     * ring's own counter admit the fence without the readback. */
+    r.rb_cntl = 0;
+    r.wptr = r.rptr = 0;
+    CHECK(adreno_fence(&ops, &P, &S, 0x534e0002) == 0 && S.fences == 2);
     /* Quiesce proves the detach from the record, not from a CX status word. */
     adreno_quiesce(&ops, &P, &S);
     CHECK(S.status & ADRENO_S_QUIESCED);

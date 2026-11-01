@@ -238,6 +238,11 @@ int adreno_ring_ready(const struct adreno_ops *o, const struct adreno_params *p,
                       const struct adreno_state *s, uint64_t n)
 {
     if (s->quiesce) return ADRENO_E_PARAMS;
+    /* ADRENO_F_RECORD: every CP register reads zero on the lab, so the ring's
+     * own counters and the recorded ring size decide, not the readback. */
+    if (p->flags & ADRENO_F_RECORD)
+        return !n || n > ADRENO_RING_EMIT_MAX(p->ring_dwords) || s->wptr >= p->ring_dwords
+            ? ADRENO_E_RING : 0;
     /* q1n1 ring_submit: the CP's own pointers decide; the size is the one CP_RB_CNTL gives the CP. */
     uint64_t w = s->wptr;
     if (RD(o, ADRENO_CP_RB_WPTR) != w || RD(o, ADRENO_CP_RB_RPTR) != w || w >= p->ring_dwords ||
@@ -272,6 +277,8 @@ int adreno_ring_reserve(const struct adreno_ops *o, const struct adreno_params *
     e = ring_doorbell(o, 0);
     if (e) return e;
     s->wptr = 0;
+    /* No RPTR to read back on the record board. */
+    if (p->flags & ADRENO_F_RECORD) return 0;
     uint64_t start = NOW(o);
     for (unsigned reads = 0;; reads++) {
         if (RD(o, ADRENO_CP_RB_RPTR) == 0) return 0;
