@@ -459,6 +459,8 @@ static void test_record_only(void)
     r.rb_cntl = 0;
     r.wptr = r.rptr = 0;
     CHECK(adreno_fence(&ops, &P, &S, 0x534e0002) == 0 && S.fences == 2);
+    uint32_t fw; memcpy(&fw, dram + (P.fence_pa - ARENA), 4);
+    CHECK(fw == 0x534e0002);                 /* the monitor wrote the word the guest polls */
     /* Quiesce proves the detach from the record, not from a CX status word. */
     adreno_quiesce(&ops, &P, &S);
     CHECK(S.status & ADRENO_S_QUIESCED);

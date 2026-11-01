@@ -345,9 +345,15 @@ static int fence_at(const struct adreno_ops *o, const struct adreno_params *p,
     e = adreno_ring_kick(o, p, s, at, 4);
 #endif
     if (e) goto out;
-    /* The ring model already ran the fence packet in memory; there is no
-     * register on the record board to read it back from. */
-    if (record) { s->fences++; s->fence_last = value; s->fence_ticks = 0; return 0; }
+    /* No CP runs the packet on the record board, so this call writes the fence
+     * word itself: the guest polls the same memory, and there is no register to
+     * read the completion back from. */
+    if (record) {
+        WR(o, pa, value);
+        CLEAN(o, pa, 4);
+        s->fences++; s->fence_last = value; s->fence_ticks = 0;
+        return 0;
+    }
     e = ADRENO_E_FENCE;
     uint64_t start = NOW(o), ticks;
     for (unsigned reads = 0;; reads++) {
