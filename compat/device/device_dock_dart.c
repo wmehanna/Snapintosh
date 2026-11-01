@@ -176,6 +176,30 @@ enum device_result device_dart_monitor_powerup(const struct device_model *models
     return DEVICE_OK;
 }
 
+enum device_result device_dart_monitor_powerdown(const struct device_model *models,
+    struct device_state *states, unsigned count, uint64_t device_id)
+{
+    if (!states || !device_models_valid(models,count,0,0) || device_id>=32)
+        return DEVICE_BAD_CONFIG;
+    uint32_t bit=1U<<(unsigned)device_id;
+    int found=-1;
+    for (unsigned i=0;i<count;i++)
+        if (models[i].kind==DEVICE_DART_T8110_V1 && (models[i].config[4]&bit)) {
+            if (found>=0) return DEVICE_BAD_CONFIG;
+            found=(int)i;
+        }
+    if (found<0) return DEVICE_NOT_FOUND;
+    struct dart_state *s=&states[found].dart;
+    if (s->initialized_ids!=bit || s->powered_ids!=bit) return DEVICE_BAD_VALUE;
+    /* The configuration words go with the power: POWERUP refuses a non-empty
+     * stream record, and the software enable bitmap describes a live DART.
+     * A table the service installed stays in the DART's own registers. */
+    s->powered_ids=0;
+    s->tcr[0]=s->tcr[1]=s->tcr[2]=0;
+    for (unsigned i=0;i<8;i++) s->enabled[i]=0;
+    return DEVICE_OK;
+}
+
 enum device_result device_dart_admit_frame(const struct device_model *models,
     const struct device_state *states, unsigned count, unsigned iommu_class,
     unsigned device_id, unsigned sid, unsigned level, unsigned *model_index)

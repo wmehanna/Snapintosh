@@ -431,6 +431,12 @@ enum device_result device_dart_monitor_init(const struct device_model *models,
  * saved-state restoration contract and is refused, never erased. */
 enum device_result device_dart_monitor_powerup(const struct device_model *models,
     struct device_state *states, unsigned count, uint64_t device_id);
+/* Endpoint 4: cut power to an initialized, powered DART. Clears the powered
+ * word and the stream configuration words (as the power-up's pristine checks
+ * expect) and the software enable bitmap; a table it installed stays in the
+ * DART's own registers. */
+enum device_result device_dart_monitor_powerdown(const struct device_model *models,
+    struct device_state *states, unsigned count, uint64_t device_id);
 /* Read-only class-5 frame admission for the audited SIO policy. The monitor's
  * constructor validates the declared stream and its translation level.
  * Optional model_index is assigned only on success. */

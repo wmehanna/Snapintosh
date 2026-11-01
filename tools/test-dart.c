@@ -269,5 +269,25 @@ int main(void)
     memcpy(saved,states,sizeof(states));
     CHECK(device_dart_monitor_powerup(models,states,2,21)==DEVICE_OK);
     CHECK(!memcmp(saved,states,sizeof(states)));
+    /* Endpoint 4 (SPTM_T8110_DART_POWERDOWN, sptm.t8140's own dispatch table):
+     * cuts an initialized, powered DART and clears the stream configuration
+     * words and the software enable bitmap. The AdrenoX2 kext on the lab board
+     * ends its configureDevice sequence with this call. */
+    CHECK(device_dart_monitor_powerdown(models,states,2,20)==DEVICE_NOT_FOUND);
+    CHECK(device_dart_monitor_powerdown(models,states,2,32)==DEVICE_BAD_CONFIG);
+    CHECK(device_dart_monitor_powerdown(models,states,2,21)==DEVICE_OK);
+    CHECK(!states[1].dart.powered_ids && !states[1].dart.tcr[0] && !states[1].dart.tcr[1]);
+    CHECK(!states[1].dart.enabled[0]);
+    CHECK(device_dart_monitor_powerdown(models,states,2,21)==DEVICE_BAD_VALUE);   /* already off */
+    /* POWERUP's transition check wants a pristine fault record; the fault the
+     * translate above latched is not one. */
+    struct dart_state *d1=&states[1].dart;
+    d1->faults=d1->translations=d1->flushes=0;
+    d1->error=d1->error_mask=0;d1->error_address=0;
+    d1->protect=d1->protect_lock=d1->tlb_op=d1->tlb_start=d1->tlb_end=0;
+    for (unsigned i=0;i<8;i++) d1->error_streams[i]=0;
+    for (unsigned i=0;i<DART_STREAMS;i++) d1->ttbr[i]=0;
+    CHECK(device_dart_monitor_powerup(models,states,2,21)==DEVICE_OK);
+    CHECK(states[1].dart.powered_ids==1U<<21 && states[1].dart.tcr[0]==9);
     printf("PASS: %u DART register, translation, ownership, fault and IRQ checks\n",checks);
 }
