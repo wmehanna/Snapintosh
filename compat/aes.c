@@ -77,6 +77,14 @@ int aes_hardware_supported(uint64_t isar0)
 /* FIPS-197 byte order matches ld1 {.16b}: rounds-1 AESE+AESMC, one AESE, EOR.
  * The guest's v0/v1 stay live across EL2 entry, so both are saved first and
  * restored last; the saved copy is cleared afterwards. */
+#if !defined(__aarch64__)
+/* The host test builds (x86_64 Linux) link this file too; the AESE asm only
+ * assembles for aarch64, and no hardware test path runs there anyway. */
+static void block_hardware(const struct aes_key *key,const uint8_t input[16],uint8_t output[16])
+{
+    (void)aes_block(key,input,output,0);
+}
+#else
 static void block_hardware(const struct aes_key *key,const uint8_t input[16],uint8_t output[16])
 {
     uint8_t saved[32] __attribute__((aligned(16)));
@@ -98,6 +106,7 @@ static void block_hardware(const struct aes_key *key,const uint8_t input[16],uin
         :"memory","cc");
     aes_clear(saved,sizeof(saved));
 }
+#endif
 static int valid(const struct aes_key *key,const uint8_t *input,const uint8_t *output,int decrypt)
 {
     if (!key || !input || !output || (decrypt!=0 && decrypt!=1) ||
