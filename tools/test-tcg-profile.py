@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'probes'))
 import guestprofile as gp  # noqa: E402
 from deferred import defer_subtrees  # noqa: E402
+from trustcache import AugmentedTrustCacheSpec  # noqa: E402
 
 TREE = ROOT / 'downloads/extracted/j700ap/DeviceTree.j700ap'
 REPAIR = '/device-tree/arm-io/secure-repair'
@@ -76,6 +77,18 @@ class TcgProfile(unittest.TestCase):
         for field in dataclasses.fields(base):
             if field.name not in ('name', 'deferred_subtrees'):
                 self.assertEqual(getattr(display, field.name), getattr(base, field.name), field.name)
+    def test_display_metal_board_carries_the_plugin_trust_inputs(self):
+        # The bundle lives in /Library/GPUBundles on the Data volume, which
+        # rootless trusts only under CSR_ALLOW_UNRESTRICTED_FS, and its CDHash
+        # must be appended to the pinned cache or the boot refuses the launch.
+        metal, base = gp.get_profile('j700ap-26A428-installed-tcg-auxkc-adreno-display-metal'), gp.J700_26A428_INSTALLED_TCG_AUXKC_ADRENO_DISPLAY
+        self.assertIs(metal, gp.J700_26A428_INSTALLED_TCG_AUXKC_ADRENO_DISPLAY_METAL)
+        self.assertEqual(metal.sip_lp_sip0, gp.CSR_ALLOW_UNRESTRICTED_FS)
+        self.assertIsInstance(metal.trust_cache, AugmentedTrustCacheSpec)
+        self.assertEqual(metal.trust_cache.base, base.trust_cache)
+        for field in dataclasses.fields(base):
+            if field.name not in ('name', 'sip_lp_sip0', 'trust_cache'):
+                self.assertEqual(getattr(metal, field.name), getattr(base, field.name), field.name)
     def test_other_profiles_keep_secure_repair(self):
         # Including every board derived from one of them, which keeps the same
         # withdrawn list.
@@ -83,7 +96,8 @@ class TcgProfile(unittest.TestCase):
             if profile not in (gp.J700_26A428_NO_CLPC_TCG, gp.J700_26A428_BASESYSTEM_TCG,
                                gp.J700_26A428_INSTALLED_TCG, gp.J700_26A428_INSTALLED_TCG_AUXKC,
                                gp.J700_26A428_INSTALLED_TCG_AUXKC_ADRENO,
-                               gp.J700_26A428_INSTALLED_TCG_AUXKC_ADRENO_DISPLAY):
+                               gp.J700_26A428_INSTALLED_TCG_AUXKC_ADRENO_DISPLAY,
+                               gp.J700_26A428_INSTALLED_TCG_AUXKC_ADRENO_DISPLAY_METAL):
                 self.assertNotIn(REPAIR, [d.node for d in profile.deferred_subtrees], profile.name)
 
     @unittest.skipUnless(TREE.exists(), 'audited firmware bundle absent')

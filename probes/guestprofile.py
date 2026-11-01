@@ -880,11 +880,23 @@ J700_26A428_INSTALLED_TCG_AUXKC_ADRENO_DISPLAY = replace(
                         '45ec668374b5244c9ad85eef0b20b73354e51f0f324a45067537f5a0fade86b6'),
     ),
 )
+# The display board plus the two host-side trust inputs a user-space Metal
+# bundle needs: SIP's filesystem bit through the local boot policy (so
+# rootless_check_trusted_internal trusts /Library/GPUBundles) and the pinned
+# Apple trust cache with the bundle's CDHashes appended per run, the way the
+# A16 metal boards do it (J700_26A428_BOOTFB_AUXKC_GPU, -METAL_DISPLAY).
+J700_26A428_INSTALLED_TCG_AUXKC_ADRENO_DISPLAY_METAL = replace(
+    J700_26A428_INSTALLED_TCG_AUXKC_ADRENO_DISPLAY,
+    name='j700ap-26A428-installed-tcg-auxkc-adreno-display-metal',
+    sip_lp_sip0=CSR_ALLOW_UNRESTRICTED_FS,
+    trust_cache=AugmentedTrustCacheSpec(J700_26A428_INSTALLED_TCG_AUXKC_ADRENO_DISPLAY.trust_cache),
+)
 PROFILES = {p.name: p for p in (J700_26A428, J700_26A428_NO_CLPC, J700_26A428_NO_CLPC_TCG,
                                J700_26A428_BASESYSTEM_TCG, J700_26A428_INSTALLED_TCG,
                                J700_26A428_INSTALLED_TCG_AUXKC,
                                J700_26A428_INSTALLED_TCG_AUXKC_ADRENO,
                                J700_26A428_INSTALLED_TCG_AUXKC_ADRENO_DISPLAY,
+                               J700_26A428_INSTALLED_TCG_AUXKC_ADRENO_DISPLAY_METAL,
                                J700_26A428_SEP_PRELOAD, J700_26A428_BOOTFB,
                                J700_26A428_BOOTFB_NUB, J700_26A428_BOOTFB_NO_USB,
                                J700_26A428_BOOTFB_RTC, J700_26A428_BOOTFB_XARS,
