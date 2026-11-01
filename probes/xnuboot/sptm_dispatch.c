@@ -317,12 +317,12 @@ static int monitor_call_impl(struct context *c, uint64_t *frame, uint64_t *elr)
         *elr += 4;
         return 1;
     }
-    if (domain == 0 && table == 3 && (endpoint == 0 || endpoint == 2 || endpoint == 3 || endpoint == 4 || endpoint == 8)) {
+    if (domain == 0 && table == 3 && (endpoint == 0 || endpoint == 1 || endpoint == 2 || endpoint == 3 || endpoint == 8)) {
         record(c,EV_MONITOR,*elr,x16,frame[0],frame[1]);
         unsigned index;
-        unsigned level=(endpoint==0 || endpoint==4) ? (unsigned)frame[3] : (endpoint==2 || endpoint==3) ? 2 : 0;
+        unsigned level=(endpoint==0 || endpoint==1) ? (unsigned)frame[3] : (endpoint==2 || endpoint==3) ? 2 : 0;
         enum device_result admitted =
-            (frame[0]>=32 || frame[1]>=2 || ((endpoint==0 || endpoint==4) && frame[3]>2)) ? DEVICE_BAD_VALUE :
+            (frame[0]>=32 || frame[1]>=2 || ((endpoint==0 || endpoint==1) && frame[3]>2)) ? DEVICE_BAD_VALUE :
             device_dart_admit_frame(c->params->models,c->model_state,
                 (unsigned)c->params->model_count,5,(unsigned)frame[0],(unsigned)frame[1],level,&index);
         /* Why a DART call was admitted or refused, before the answer leaves
@@ -347,7 +347,7 @@ static int monitor_call_impl(struct context *c, uint64_t *frame, uint64_t *elr)
                 frame[0],frame[1],frame[2],frame[3],frame[4],frame[5]) :
             endpoint==3 ? sptm_dart_unmap(&memory,&c->model_state[index].dart,
                 frame[0],frame[1],frame[2],frame[3],frame[4]) :
-            endpoint==4 ? sptm_dart_unmap_table(&memory,&c->model_state[index].dart,
+            endpoint==1 ? sptm_dart_unmap_table(&memory,&c->model_state[index].dart,
                 frame[0],frame[1],frame[2],frame[3],frame[4]) :
             sptm_dart_enable(&memory,&c->model_state[index].dart,frame[0],frame[1]);
         if (result!=SPTM_OK) {
@@ -381,12 +381,15 @@ static int monitor_call_impl(struct context *c, uint64_t *frame, uint64_t *elr)
         }
         frame[0]=0;c->calls++;*elr+=4;return 1;
     }
-    if (domain == 0 && table == 3 && (endpoint == 5 || endpoint == 6)) {
+    if (domain == 0 && table == 3 && (endpoint == 4 || endpoint == 5 || endpoint == 6)) {
         record(c, EV_MONITOR, *elr, x16, frame[0], frame[1]);
         enum device_result result=endpoint==6 ?
             device_dart_monitor_init(c->params->models,c->model_state,
                 (unsigned)c->params->model_count,frame[0]) :
+            endpoint==5 ?
             device_dart_monitor_powerup(c->params->models,c->model_state,
+                (unsigned)c->params->model_count,frame[0]) :
+            device_dart_monitor_powerdown(c->params->models,c->model_state,
                 (unsigned)c->params->model_count,frame[0]);
         record(c,EV_DART_STATE,*elr,endpoint,(uint64_t)(int64_t)result,frame[0]);
         dart_diag(c, endpoint, (unsigned)frame[0], 0, result, 0);
