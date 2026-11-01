@@ -295,12 +295,16 @@ static int fence_at(const struct adreno_ops *o, const struct adreno_params *p,
     int e = ADRENO_E_PARAMS, rung;
     s->fence_ticks = 0;
     if (s->quiesce || !(s->status & ADRENO_S_ADOPTED) || (s->status & ADRENO_S_QUIESCED)) goto out;
+    /* ADRENO_F_RECORD: the lab board's GPU reads zero, so the three power and
+     * SQE words would refuse every fence; the ring model still runs the words
+     * in memory and writes the fence, which is the part this call answers from. */
+    int record = !!(p->flags & ADRENO_F_RECORD);
     e = ADRENO_E_CX;
-    if (!CX_ON(o)) goto out;
+    if (!record && !CX_ON(o)) goto out;
     e = ADRENO_E_GX;
-    if (!GX_ON(o)) goto out;
+    if (!record && !GX_ON(o)) goto out;
     e = ADRENO_E_SQE;
-    if (!(RD(o, ADRENO_CP_SQE_CNTL) & 1)) goto out;
+    if (!record && !(RD(o, ADRENO_CP_SQE_CNTL) & 1)) goto out;
     /* ADRENO_E_RING (refused or dropped) or ADRENO_E_FENCE (the padding was not consumed). */
     uint64_t at;
 #if SNAP_ADRENO_FENCE_BR
@@ -334,6 +338,9 @@ static int fence_at(const struct adreno_ops *o, const struct adreno_params *p,
     e = adreno_ring_kick(o, p, s, at, 4);
 #endif
     if (e) goto out;
+    /* The ring model already ran the fence packet in memory; there is no
+     * register on the record board to read it back from. */
+    if (record) { s->fences++; s->fence_last = value; s->fence_ticks = 0; return 0; }
     e = ADRENO_E_FENCE;
     uint64_t start = NOW(o), ticks;
     for (unsigned reads = 0;; reads++) {

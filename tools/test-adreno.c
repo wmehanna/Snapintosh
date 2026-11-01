@@ -441,6 +441,19 @@ static void test_record_only(void)
     CHECK(mirror(ADRENO_WINDOW_BASE, 0x4000) == 0);
     /* four 4 KiB slots in the one 16 KiB window the kernel mapped */
     CHECK(S.map_pages == 4 && S.live_pages == 4);
+    /* A guest fence is answered from the ring model too: gated on the zero
+     * power words it refuses -61 (p5r77: "AdrenoX2: guest fence refused ...
+     * status=-61", IOGPU::start failed), with the flag it completes. */
+    P.ring_wptr = S.wptr;
+    r.wptr = r.rptr = (unsigned)S.wptr;      /* the modeled CP's pointers start where q1n1's did */
+    r.rb_cntl = 12 | 2 << 8;                 /* RB_CNTL_DEFAULT: 8192 dwords, as adopt recorded */
+    record.flags &= ~ADRENO_F_RECORD;
+    P = record;
+    CHECK(adreno_fence(&ops, &P, &S, 0x534e0001) == ADRENO_E_CX && S.wptr == 22);
+    record.flags |= ADRENO_F_RECORD;
+    P = record;
+    CHECK(adreno_fence(&ops, &P, &S, 0x534e0001) == 0);
+    CHECK(S.fences == 1 && S.wptr == 26);
     /* Quiesce proves the detach from the record, not from a CX status word. */
     adreno_quiesce(&ops, &P, &S);
     CHECK(S.status & ADRENO_S_QUIESCED);
