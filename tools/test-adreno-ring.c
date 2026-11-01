@@ -1687,6 +1687,28 @@ static void test_s3(void)
 #endif
 
 #ifndef ADRENO_RING_NO_MAIN
+/* The record board (ADRENO_F_RECORD): every GPU register reads zero, so the IB
+ * is admitted without the CX/CB0/SQE readback and completed by the monitor's
+ * own markers instead of a CP poll. The AdrenoX2 kext probes the ring this way
+ * on the lab board before it turns submission on. */
+static void test_s2_record_ib(void)
+{
+    ring_setup(22);
+    map(PKG_VA, PKG_PA, 0x4000, 1);
+    r.cx = 0; r.sqe = 0; r.wptr = r.rptr = 22;
+    P.flags |= ADRENO_F_RECORD;
+    put_package(PKG_PA, NOP_IB, 1, 64);
+    unsigned submits = S.ib_submits;
+    CHECK(ib(PKG_VA, 1, 64) == 0);
+    CHECK(S.ib_submits == submits + 1 && S.ib_errors == 0);
+    uint32_t marker = ADRENO_IB_MARKER_BASE ^ (uint32_t)S.ib_submits;
+    CHECK(dev_rd32(MEMPTRS + 0x80) == marker && dev_rd32(MEMPTRS + 0xc0) == marker);
+    P.flags &= ~(uint64_t)ADRENO_F_RECORD;
+    /* Without the flag the same zeroed words refuse at the CX gate. */
+    r.cx = 0;
+    put_package(PKG_PA, NOP_IB, 1, 64);
+    CHECK(ib(PKG_VA, 1, 64) == ADRENO_E_CX && S.ib_errors == 1);
+}
 int main(void)
 {
     dram = calloc(1, RAM_SIZE);
@@ -1708,6 +1730,7 @@ int main(void)
         test_s2_after_doorbell();
     }
 #endif
+    test_s2_record_ib();                         /* plan-free: the record board, with or without a plan */
 #if SNAP_ADRENO_IB_ASYNC && !defined(ADRENO_RING_TEST_PRE_CHANGE)
     test_s3();                                   /* plan-free: runs with or without the draw-plan fixture */
 #endif
