@@ -36,6 +36,36 @@
 #define SNAP_PANIC_SERVE 0
 #endif
 
+/* TEMP DIAG: one decimal number on the console the host already reads. */
+static void dart_diag_num(struct context *c, uint64_t v)
+{
+    char buf[24]; int n = 0;
+    if (!v) buf[n++] = '0';
+    while (v) { buf[n++] = (char)('0' + v % 10); v /= 10; }
+    while (n) console_put(c, (uint8_t)buf[--n]);
+}
+static void dart_diag_str(struct context *c, const char *s)
+{
+    while (*s) console_put(c, (uint8_t)*s++);
+}
+static void dart_diag(struct context *c, unsigned ep, unsigned dev, unsigned sid,
+                      enum device_result r, const struct dart_state *d)
+{
+    dart_diag_str(c, "DARTDIAG ep");
+    dart_diag_num(c, ep); console_put(c, ' ');
+    dart_diag_str(c, "dev"); dart_diag_num(c, dev); console_put(c, ' ');
+    dart_diag_str(c, "sid"); dart_diag_num(c, sid); console_put(c, ' ');
+    dart_diag_str(c, "r");
+    dart_diag_num(c, (uint64_t)(int64_t)r); console_put(c, ' ');
+    dart_diag_str(c, "ids");
+    dart_diag_num(c, d ? d->initialized_ids : 0xffffffffu); console_put(c, ' ');
+    dart_diag_str(c, "pow");
+    dart_diag_num(c, d ? d->powered_ids : 0xffffffffu); console_put(c, ' ');
+    dart_diag_str(c, "t0");
+    dart_diag_num(c, d ? d->tcr[0] : 999); console_put(c, ' ');
+    dart_diag_str(c, "t1");
+    dart_diag_num(c, d ? d->tcr[1] : 999); console_put(c, '\n');
+}
 /* Answer a monitor call in place, or 0 if it is one we do not implement yet.
  *
  * The first thing a stock XNU asks for is SERIAL_PUTC. Answering it is what
@@ -287,12 +317,12 @@ static int monitor_call_impl(struct context *c, uint64_t *frame, uint64_t *elr)
         *elr += 4;
         return 1;
     }
-    if (domain == 0 && table == 3 && (endpoint == 0 || endpoint == 2 || endpoint == 3 || endpoint == 8)) {
+    if (domain == 0 && table == 3 && (endpoint == 0 || endpoint == 2 || endpoint == 3 || endpoint == 4 || endpoint == 8)) {
         record(c,EV_MONITOR,*elr,x16,frame[0],frame[1]);
         unsigned index;
-        unsigned level=endpoint==0 ? (unsigned)frame[3] : (endpoint==2 || endpoint==3) ? 2 : 0;
+        unsigned level=(endpoint==0 || endpoint==4) ? (unsigned)frame[3] : (endpoint==2 || endpoint==3) ? 2 : 0;
         enum device_result admitted =
-            (frame[0]>=32 || frame[1]>=2 || (endpoint==0 && frame[3]>2)) ? DEVICE_BAD_VALUE :
+            (frame[0]>=32 || frame[1]>=2 || ((endpoint==0 || endpoint==4) && frame[3]>2)) ? DEVICE_BAD_VALUE :
             device_dart_admit_frame(c->params->models,c->model_state,
                 (unsigned)c->params->model_count,5,(unsigned)frame[0],(unsigned)frame[1],level,&index);
         /* Why a DART call was admitted or refused, before the answer leaves
@@ -306,6 +336,8 @@ static int monitor_call_impl(struct context *c, uint64_t *frame, uint64_t *elr)
         if (ds) record(c,EV_DART_STATE,*elr,0x100|endpoint,
                        ((uint64_t)(ds->tcr[0]&0xff) << 32) | (ds->tcr[1]&0xff),
                        ((uint64_t)(ds->error?1:0) << 32) | ((uint64_t)(ds->ttbr[0]?1:0) << 16) | (ds->faults & 0xffff));
+        dart_diag(c, endpoint, (unsigned)frame[0], (unsigned)frame[1], admitted,
+                  admitted == DEVICE_OK ? ds : 0);
         if (admitted != DEVICE_OK) return 0;
         struct sptm_memory memory=sptm_context_memory(c);
         enum sptm_result result=endpoint==0 ?
@@ -314,6 +346,8 @@ static int monitor_call_impl(struct context *c, uint64_t *frame, uint64_t *elr)
             endpoint==2 ? sptm_dart_map(&memory,&c->model_state[index].dart,
                 frame[0],frame[1],frame[2],frame[3],frame[4],frame[5]) :
             endpoint==3 ? sptm_dart_unmap(&memory,&c->model_state[index].dart,
+                frame[0],frame[1],frame[2],frame[3],frame[4]) :
+            endpoint==4 ? sptm_dart_unmap_table(&memory,&c->model_state[index].dart,
                 frame[0],frame[1],frame[2],frame[3],frame[4]) :
             sptm_dart_enable(&memory,&c->model_state[index].dart,frame[0],frame[1]);
         if (result!=SPTM_OK) {
@@ -325,10 +359,24 @@ static int monitor_call_impl(struct context *c, uint64_t *frame, uint64_t *elr)
         if ((endpoint==2 || endpoint==3) && (gp->gpu.flags & ADRENO_F_DART) &&
             frame[0]==SPTM_DART_ADRENO && !frame[1]) {
             struct gpu_leaf_ctx leaf={&memory,&c->model_state[index].dart};
+            {
+                uint64_t lv=gpu_leaf(&leaf,frame[2]);
+                dart_diag_str(c,"DARTMAP ep");dart_diag_num(c,endpoint);
+                dart_diag_str(c," iova");dart_diag_num(c,frame[2]);
+                dart_diag_str(c," size");dart_diag_num(c,endpoint==2 ? frame[4] : frame[3]);
+                dart_diag_str(c," leaf");dart_diag_num(c,lv&1);
+                dart_diag_str(c," pa");dart_diag_num(c,((lv&0x3ffffffc00ULL)<<4));
+                console_put(c,'\n');
+            }
             struct adreno_ops o=GPU_LEAF_OPS(c);
             if (endpoint==2) c->gpu.maps++; else c->gpu.unmaps++;
             int e=adreno_mirror(&o,&gp->gpu,&c->gpu,frame[2],endpoint==2 ? frame[4] : frame[3],
                                 gpu_leaf,&leaf,gp->mem_low,gp->mem_high);
+            dart_diag_str(c,"DARTMIR e");dart_diag_num(c,(uint64_t)(int64_t)e);
+            dart_diag_str(c," pages");dart_diag_num(c,c->gpu.map_pages);
+            dart_diag_str(c," live");dart_diag_num(c,c->gpu.live_pages);
+            dart_diag_str(c," refused");dart_diag_num(c,c->gpu.refused);
+            console_put(c,'\n');
             if (e) {record(c,EV_GPU_SMMU,*elr,(uint64_t)(int64_t)e,frame[2],endpoint);return 0;}
         }
         frame[0]=0;c->calls++;*elr+=4;return 1;
@@ -341,6 +389,7 @@ static int monitor_call_impl(struct context *c, uint64_t *frame, uint64_t *elr)
             device_dart_monitor_powerup(c->params->models,c->model_state,
                 (unsigned)c->params->model_count,frame[0]);
         record(c,EV_DART_STATE,*elr,endpoint,(uint64_t)(int64_t)result,frame[0]);
+        dart_diag(c, endpoint, (unsigned)frame[0], 0, result, 0);
         if (result != DEVICE_OK) return 0;
         /* Both services are void. The kernel control wrapper supplies its
          * own success status; x1..x7 are not inputs. */

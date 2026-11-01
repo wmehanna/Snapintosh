@@ -119,6 +119,7 @@ static int fine_dart_call(struct context *c,uint64_t *frame,struct fine_call_sta
     if (ds) record(c,EV_DART_STATE,s->elr,0x100|(unmap?3:2),
                    ((uint64_t)(ds->tcr[0]&0xff) << 32) | (ds->tcr[1]&0xff),
                    ((uint64_t)(ds->error?1:0) << 32) | ((uint64_t)(ds->ttbr[0]?1:0) << 16) | (ds->faults & 0xffff));
+    dart_diag(c,(unmap?3:2)+10,(unsigned)frame[0],(unsigned)frame[1],admitted,admitted==DEVICE_OK ? ds : 0);
     if(frame[0]!=SPTM_DART_ADRENO || frame[1] || !(p->gpu.flags & ADRENO_F_DART) || admitted!=DEVICE_OK) {
         s->reason=FINE_NO_SHAPE;return FINE_DECLINE;
     }
