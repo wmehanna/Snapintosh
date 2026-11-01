@@ -767,10 +767,12 @@ static int xnuboot_trap_locked(uint64_t *frame, uint64_t esr, uint64_t *elr)
         vcpu_of(c)->async_captured = 2;
         /* Which CPU's ERET was refused, and what the nested-control register
          * held. The target/SPSR/instruction record alone cannot tell an idle
-         * secondary's zero ELR_EL1 from a stale frame (p5r47, p5r58, p5r65). */
+         * secondary's zero ELR_EL1 from a stale frame (p5r47, p5r58, p5r65);
+         * this one is recorded last so it survives as the terminal word even
+         * when the log has long overflowed. */
+        record(c, EV_RETURN_REFUSED, *elr, target, spsr, word);
         record(c, EV_OTHER, *elr, UINT64_C(0x45524554) /* 'ERT ' */, vhcr,
                ((uint64_t)vcpu_of(c)->slot << 32) | (physical_spsr & 0xffffffffu));
-        record(c, EV_RETURN_REFUSED, *elr, target, spsr, word);
         return 1;
     }
     if (ec == 0x09 && generic_pauth_supported()) {

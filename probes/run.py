@@ -1070,6 +1070,15 @@ def classify(entered, fault, console, log, tally=None, dropped=0,
             f'ELR_EL1 {elr:#x} ESR_EL1 {esr:#x} (EC {esr >> 26:#x})')
     if last == EV_GUEST_EXC:
         return EXIT_GUEST_EXC, 'the probe stopped at entry to the guest exception handler'
+    # EV_OTHER carrying the 'ERT ' tag is the refusal's CPU and nested-control
+    # word, recorded after target/SPSR/instruction so the terminal word names
+    # whose ERET it was even on a log that has long overflowed (p5r47, p5r58,
+    # p5r65: an intermittent target 0x0 that nothing could attribute).
+    if last == 5 and tail[2] == 0x45524554:
+        return EXIT_UNSUPPORTED, (
+            f'an ERET from the nested kernel was refused on vCPU '
+            f'{(tail[4] >> 32) & 0xffff:#x}: VNCR {tail[3]:#x}, '
+            f'physical SPSR {tail[4] & 0xffffffff:#x} at pc {tail[1]:#x}')
     if last == 25:
         return EXIT_UNSUPPORTED, (f'unsupported exception return at {tail[1]:#x}: '
                                   f'target {tail[2]:#x}, SPSR {tail[3]:#x}, '
