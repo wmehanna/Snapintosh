@@ -225,6 +225,101 @@ enum sptm_result sptm_dart_map_table(const struct sptm_memory *m,
     return SPTM_OK;
 }
 
+enum sptm_result sptm_dart_unmap_table(const struct sptm_memory *m,
+    struct dart_state *s,uint64_t id,uint64_t sid,uint64_t iova,uint64_t level,uint64_t pa)
+{
+    if (!m || !m->map || !m->publish || !s || !sptm_sep_firmware_valid(m) ||
+        ((m->frame_low|m->frame_high|m->alloc_low|m->alloc_high)&0x3fff) ||
+        (m->frame_map_pa&15) || m->frame_low>=m->frame_high ||
+        m->alloc_low>=m->alloc_high || m->alloc_low<m->frame_low ||
+        m->alloc_high>m->frame_high || m->alloc_high>PA_LIMIT)
+        return SPTM_BAD_CONFIG;
+    uint64_t map_size=((m->frame_high-m->frame_low)>>14)*16;
+    if (m->frame_map_pa>UINT64_MAX-map_size ||
+        (m->frame_map_pa<m->alloc_high && m->frame_map_pa+map_size>m->alloc_low))
+        return SPTM_BAD_CONFIG;
+    if (id>=32 || sid>=2 || level>2 || level<first_level(id)) return SPTM_UNSUPPORTED_OPTIONS;
+    if ((iova&0x3fff) || !iova_range(id,sid,iova,1)) return SPTM_BAD_ADDRESS;
+    uint32_t bit=1U<<(unsigned)id;
+    if (s->initialized_ids!=bit || s->powered_ids!=bit || s->tcr[sid]!=(first_level(id) ? 1U : 9U))
+        return SPTM_BAD_CONFIG;
+    unsigned first=first_level(id);
+    /* The root is named by TTBR: an absent one is the first thing to report,
+     * and an enabled stream keeps its root until ENABLE's counterpart runs. */
+    if (level==first) {
+        uint32_t ttbr=s->ttbr[sid];
+        if (!ttbr) return SPTM_TABLE_MISSING;
+        if (!(ttbr&1) || (ttbr&~0x3ffffffdU)) return SPTM_BAD_TABLE;
+        if (((uint64_t)(ttbr&0x3ffffffcU)<<12)!=pa) return SPTM_BAD_TABLE;
+        if ((s->protect&1) || (s->enabled[sid/32]&(1U<<(sid%32))))
+            return SPTM_FRAME_BUSY;
+    }
+    struct iommu_frame child,parent;
+    enum sptm_result r=frame(m,pa,(unsigned)id,(unsigned)sid,(unsigned)level,&child);
+    if (r) return r;
+    /* Detach only a table that is empty: its one surviving reference is the
+     * incoming one map_table published, and its leaves were unmapped first. */
+    for (unsigned i=0;i<0x4000;i++) if (child.page[i]) return SPTM_BAD_TABLE;
+    if (child.refs!=1) return SPTM_BAD_REFERENCE;
+
+    volatile uint8_t *slot=0;
+    uint64_t slot_pa=0;
+    if (level!=first) {
+        uint32_t ttbr=s->ttbr[sid];
+        if (!ttbr) return SPTM_TABLE_MISSING;
+        if (!(ttbr&1) || (ttbr&~0x3ffffffdU)) return SPTM_BAD_TABLE;
+        uint64_t current=(uint64_t)(ttbr&0x3ffffffcU)<<12,seen[2];
+        for (unsigned l=first;l<level;l++) {
+            if (current==pa) return SPTM_BAD_TABLE;
+            for (unsigned i=first;i<l;i++) if (seen[i]==current) return SPTM_BAD_TABLE;
+            seen[l]=current;
+            r=frame(m,current,(unsigned)id,(unsigned)sid,l,&parent);
+            if (r) return r;
+#if SNAP_DART_MEMO
+            r=table_verdict(m,&parent,id,sid,l,first);
+            if (r) return r;
+#else
+            unsigned entries=0;
+            for (unsigned i=0;i<2048;i++) {
+                uint64_t v=load64(parent.page+8*i);
+                if (!v) continue;
+                if (!(v&1) || (v&~(TABLE_ADDRESS|1UL)) ||
+                    !sptm_managed_frame(m,(v&TABLE_ADDRESS)<<4) ||
+                    (l==first && !root_slot(id,sid,i)))
+                    return SPTM_BAD_TABLE;
+                entries++;
+            }
+            if (parent.refs!=entries+1) return SPTM_BAD_REFERENCE;
+#endif
+            unsigned index=(unsigned)((iova>>(36-11*l))&2047);
+            slot=parent.page+8*index;slot_pa=parent.pa+8*index;
+            uint64_t v=load64(slot);
+            if (l+1==level) {
+                if (!v || (v&TABLE_ADDRESS)!=((pa>>4)&TABLE_ADDRESS) || !(v&1))
+                    return SPTM_TABLE_MISSING;
+            } else {
+                if (!v) return SPTM_TABLE_MISSING;
+                current=(v&TABLE_ADDRESS)<<4;
+            }
+        }
+    }
+    /* Release the references before the descriptor/TTBR, the order map_table
+     * takes in reverse; nothing below can fail. */
+    m->publish(m->ctx,child.pa,0x4000);
+    publish_refs(m,&child,0);
+    if (level!=first) {
+        publish_refs(m,&parent,parent.refs-1);
+        store64(slot,0);
+        m->publish(m->ctx,slot_pa,8);
+    } else {
+        s->ttbr[sid]=0;
+    }
+#if SNAP_DART_MEMO
+    if (m->dart_memo) sptm_dart_memo_forget(m->dart_memo,pa);
+#endif
+    return SPTM_OK;
+}
+
 static enum sptm_result data_frame(const struct sptm_memory *m,uint64_t pa,
                                  uint64_t id,uint64_t sid,int list,volatile uint8_t **metadata)
 {

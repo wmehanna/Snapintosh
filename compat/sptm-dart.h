@@ -26,6 +26,14 @@ enum sptm_result sptm_dart_map_table(const struct sptm_memory *memory,
     struct dart_state *dart, uint64_t device_id, uint64_t sid, uint64_t iova,
     uint64_t level, uint64_t pa);
 
+/* Table 3 endpoint 4: detach the empty class-5 table endpoint 0 attached, the
+ * exact inverse of map_table. Requires the table's one incoming reference and
+ * no entries; releases the references before clearing the parent descriptor or
+ * TTBR. Streams must not be enabled. */
+enum sptm_result sptm_dart_unmap_table(const struct sptm_memory *memory,
+    struct dart_state *dart, uint64_t device_id, uint64_t sid, uint64_t iova,
+    uint64_t level, uint64_t pa);
+
 /* Table 3 endpoint 2: map an owned physical page list within one 32 MiB
  * leaf-table span. Options 0..3 select read/write disable bits. New leaves
  * and identical repeats are supported; replacement/subpage-disable modes

@@ -275,11 +275,52 @@ static void test_boundary(void)
 #endif
 }
 
+/* Table 3 endpoint 4: detach the empty tables endpoint 0 attached, and only
+ * those. The kext's sequence on the lab board is map_table, map, enable,
+ * unmap, unmap_table. */
+static void test_unmap_table(void)
+{
+    struct sptm_memory m = memory();
+    powered();
+    uint64_t va = ADRENO_WINDOW_BASE;
+    attach(&m, va);
+    CHECK(state.ttbr[0] == (ROOT >> 12 | 1) && state.ttbr[1] == 0);
+    /* A table with a leaf in it is not detached until the leaf is gone. */
+    CHECK(sptm_dart_map(&m, &state, ID, 0, va, LIST, 0x4000, 0) == SPTM_OK);
+    CHECK(sptm_dart_unmap_table(&m, &state, ID, 0, va, 2, LEAF) == SPTM_BAD_TABLE);
+    CHECK(sptm_dart_unmap(&m, &state, ID, 0, va, 0x4000, 0) == SPTM_OK);
+    CHECK(sptm_dart_unmap_table(&m, &state, ID, 0, va, 2, LEAF) == SPTM_OK);
+    CHECK(get(ROOT + 8 * ((va >> 25) & 2047)) == 0);
+    CHECK(sptm_dart_unmap_table(&m, &state, ID, 0, va, 1, ROOT) == SPTM_OK);
+    CHECK(state.ttbr[0] == 0);
+    CHECK(sptm_dart_unmap_table(&m, &state, ID, 0, va, 1, ROOT) == SPTM_TABLE_MISSING);
+    /* Refusals: an unpowered DART, the wrong level, a second stream, and a
+     * table the root entry does not point at. */
+    m = memory();
+    powered();
+    attach(&m, va);
+    CHECK(sptm_dart_unmap_table(&m, &state, ID, 0, va, 0, ROOT) == SPTM_UNSUPPORTED_OPTIONS);
+    CHECK(sptm_dart_unmap_table(&m, &state, ID, 0, va, 3, LEAF) == SPTM_UNSUPPORTED_OPTIONS);
+    CHECK(sptm_dart_unmap_table(&m, &state, ID, 2, va, 1, ROOT) == SPTM_UNSUPPORTED_OPTIONS);
+    CHECK(sptm_dart_unmap_table(&m, &state, ID, 0, ADRENO_WINDOW_END, 1, ROOT) == SPTM_BAD_ADDRESS);
+    CHECK(sptm_dart_unmap_table(&m, &state, ID, 0, va, 1, LEAF) != SPTM_OK);   /* level mismatch */
+    CHECK(sptm_dart_unmap_table(&m, &state, ID, 0, va, 2, LEAF) == SPTM_OK);
+    CHECK(sptm_dart_unmap_table(&m, &state, ID, 0, va, 2, ROOT) != SPTM_OK);
+    CHECK(sptm_dart_unmap_table(&m, &state, ID, 0, va, 1, ROOT) == SPTM_OK);
+    /* An enabled stream keeps its root: the hardware cannot detach it. */
+    m = memory();
+    powered();
+    attach(&m, va);
+    CHECK(sptm_dart_enable(&m, &state, ID, 0) == SPTM_OK);
+    CHECK(sptm_dart_unmap_table(&m, &state, ID, 0, va, 1, ROOT) == SPTM_FRAME_BUSY);
+}
+
 int main(void)
 {
     test_admission();
     test_calls();
     test_boundary();
+    test_unmap_table();
     if (failures) { printf("FAILED: %u of %u Adreno DART checks\n", failures, checks); return 1; }
     printf("PASS: %u Adreno virtual-DART admission, table-3 and mirror checks\n", checks);
     return 0;
