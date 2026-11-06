@@ -232,6 +232,14 @@ hand the air2ir3 compiler that view, because it refuses format class 3 as a
 render target. Evidence and exact hashes are in `HANDOFF-P5-20261104.md`,
 update 06:00 EST Nov 6.
 
+The QEMU lab board cannot go further than this. Its Adreno profile adopts a
+synthetic record (`ADRENO_F_RECORD`): no command processor runs the ring, and
+the monitor writes each IB's completion markers itself
+(`compat/adreno-ib.c`). Command buffers complete without executing, so every
+GPU-rendered surface stays zero and WindowServer's frames are black apart
+from the CPU-drawn cursor. The login window and desktop gates need the A16
+or a software GPU executor on the board.
+
 ## What counts as passing a gate
 
 A static path, an offline test, driver registration, the text console or an
