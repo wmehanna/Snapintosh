@@ -243,6 +243,7 @@ int adreno_kernel_command(const void *command, uint64_t available, const struct 
     if (result != ADRENO_SUBMIT_E_COMMAND) return result;
     uint8_t type[4];
     copy_in(type, command, sizeof type);
+    if (rd32(type) == SOFTGPU_KCMD_STREAM && ops->stream) return ops->stream(ops->context, command, available);
     if (rd32(type) != ADRENO_KCMD_IB) return ADRENO_SUBMIT_E_COMMAND;
     return ops->ib ? ops->ib(ops->context, command, available) : ADRENO_SUBMIT_E_INACTIVE;
 }
