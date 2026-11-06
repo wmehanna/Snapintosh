@@ -97,7 +97,13 @@ struct adreno_kernel_ops {
     int (*fence)(void *context);
     int (*fill)(void *context, const struct adreno_fill32_request *);
     int (*ib)(void *context, const void *command, uint64_t bytes);
+    /* SOFTGPU_KCMD_STREAM (0x1010, softgpu-guest.h): a SoftGPU packet stream for the QEMU device ring. Optional: NULL
+     * leaves 0x1010 an unknown command (ADRENO_SUBMIT_E_COMMAND), as before. Failures may be SGPU_E_* (-1..-15). */
+    int (*stream)(void *context, const void *command, uint64_t bytes);
 };
+#ifndef SOFTGPU_KCMD_STREAM
+#define SOFTGPU_KCMD_STREAM 0x1010u
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -195,8 +201,8 @@ int adreno_fence_classify(int64_t status, uint64_t reply, uint32_t value, uint32
  * result is ADRENO_SUBMIT_E_INACTIVE; an UNCERTAIN or VISIBILITY result sets it until reset. */
 int adreno_submit_gated(uint8_t *latch, int (*work)(void *), void *context);
 /* One IOGPU kernel command (processSegmentKernelCommand's extent): ADRENO_SUBMIT_GENERIC for IOGPU's own types,
- * FENCE through adreno_submit_command, FILL32 through adreno_fill32_decode, ADRENO_KCMD_IB to ops->ib, anything
- * else ADRENO_SUBMIT_E_COMMAND. Nonzero other than GENERIC means IOGPU submission error 0xa for the caller. */
+ * FENCE through adreno_submit_command, FILL32 through adreno_fill32_decode, ADRENO_KCMD_IB to ops->ib,
+ * SOFTGPU_KCMD_STREAM to ops->stream (when set), anything else ADRENO_SUBMIT_E_COMMAND. Nonzero other than GENERIC means IOGPU submission error 0xa for the caller. */
 int adreno_kernel_command(const void *command, uint64_t available, const struct adreno_kernel_ops *);
 #ifdef __cplusplus
 }
