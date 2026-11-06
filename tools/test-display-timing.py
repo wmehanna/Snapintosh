@@ -146,7 +146,7 @@ class Loader(unittest.TestCase):
         self.assertIn('DISPLAY_TIMING = None', src)
         self.assertIn('ranges += displaytiming.stage2_ranges(DISPLAY_TIMING)', src)
         self.assertIn('words += displaytiming.params_words(DISPLAY_TIMING)', src)
-        self.assertIn('(PARAMS_WORDS + 6 + 12 + 4) * 8', src)
+        self.assertIn('(PARAMS_WORDS + 6 + 12 + 4 + 5) * 8', src)   # + softgpu (compat/softgpu.h)
         self.assertIn("xb.DISPLAY_TIMING = displaytiming.SPEC", (ROOT / 'probes/run.py').read_text())
 
     def test_installed_fresh_selection(self):

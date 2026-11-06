@@ -628,6 +628,18 @@ _Static_assert(SNAP_FAST_VCPU_TRAPS && SNAP_ROOT_CACHE_WIDE,
 #else
 #define SNAP_DISPLAY_TIMING_ROWS 0
 #endif
+/* The QEMU SoftGPU device's guest page (page 0) as Device-nGnRE passthrough for the lab board, from struct
+ * softgpu_params appended after struct params and the blocks above when built in (compat/softgpu.h, probes/adreno.py;
+ * probes/run.py with SNAP_SOFTGPU=1 --qemu). */
+#ifndef SNAP_SOFTGPU
+#define SNAP_SOFTGPU 0
+#endif
+#if SNAP_SOFTGPU
+#include "../compat/softgpu.h"
+#define SNAP_SOFTGPU_ROWS SOFTGPU_STAGE2_MAX
+#else
+#define SNAP_SOFTGPU_ROWS 0
+#endif
 /* NEST_REGION and UNNEST_REGION answer nested shared level-3 tables from the
  * SWITCH_ROOT memo's retained verdicts (or scan each once), and UNMAP_TABLE of
  * an empty level-3 table proves both trees empty table by table

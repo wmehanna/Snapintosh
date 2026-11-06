@@ -1140,8 +1140,16 @@ def main():
         # a valid block (any other monitor) add nothing, as that monitor maps nothing.
         import displaytiming
         dt_at=qcc_at+(qcc2072wifi.PARAMS_WORDS*8 if qcc_rows else 0)
-        ranges+=displaytiming.stage2_audit_ranges(list(struct.unpack(f'<{displaytiming.PARAMS_WORDS}Q',
+        dt_rows=displaytiming.stage2_audit_ranges(list(struct.unpack(f'<{displaytiming.PARAMS_WORDS}Q',
             read(dt_at,displaytiming.PARAMS_WORDS*8))))
+        ranges+=dt_rows
+        # SNAP_SOFTGPU=1: the SoftGPU device's page 0, read-write (vcpu_stage2_prepare, compat/softgpu.h), from the
+        # block a -DSNAP_SOFTGPU=1 monitor reads after the blocks above; words that are not a valid block (any other
+        # monitor) add nothing, as that monitor maps nothing. Page 1 is never listed.
+        import adreno
+        sg_at=dt_at+(displaytiming.PARAMS_WORDS*8 if dt_rows else 0)
+        ranges+=adreno.softgpu_audit_ranges(list(struct.unpack(f'<{adreno.SOFTGPU_PARAMS_WORDS}Q',
+            read(sg_at,adreno.SOFTGPU_PARAMS_WORDS*8))))
         stage2=audit_private_stage2(read,banks,ranges,table_start,table_end)
         stage2['private_context_unmapped']=True
         stage2['private_context_range']=[hex(work),hex(table_start)]

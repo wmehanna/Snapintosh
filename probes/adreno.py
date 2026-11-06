@@ -19,6 +19,9 @@ The tree gains, all under /arm-io:
     -DADRENO_VA_WIDE=1 monitor and kext: agents/gpu-va-wide). The monitor
     models its registers like SIO's and mirrors stream 0 into the Adreno
     SMMU's context bank 0.
+With SNAP_SOFTGPU=1 (lab board, QEMU's snap-softgpu device; plans/p6-softgpu-integration.md W1) the tree gains one more
+`ranges` triple for the device's page 0 and a last `reg` entry on `adreno`, named by `snapintosh,softgpu-reg`; see
+SoftGpuSpec. Page 1 (the monitor's DMA-window page) is in neither.
 Nothing in the tree names the q1n1 GPU arena: it is not guest memory, stage 2
 never maps it, and the DART admits only guest-owned frames.
 """
@@ -49,6 +52,18 @@ WINDOW_END_WIDE = 0x4_0000_0000
 CB0_T0SZ, CB0_T0SZ_WIDE = 32, 30
 GPU_VA_BITS_PROPERTY = 'snapintosh,gpu-va-bits'     # the wide kext refuses to start without 34 here
 POOL_RESERVATION_ALIGN = 0x10000
+
+
+# SoftGPU device page (compat/softgpu.h, checked by tools/test-adreno-image.py).
+SOFTGPU_MAGIC = int.from_bytes(b'SNAPSGP1', 'little')
+SOFTGPU_F_PAGE0 = 1
+SOFTGPU_PARAMS_WORDS = 5
+SOFTGPU_PAGE = 0x1000
+SOFTGPU_WINDOW = (0x0C000000, 0x0E000000)   # compat/softgpu.h SOFTGPU_WINDOW_LO/HI
+SOFTGPU_INTID_FIRST, SOFTGPU_INTID_LAST = 32, 1019
+SOFTGPU_CHILD_BASE = 0x7_0000_0000      # arm-io child address of page 0 = this + its physical address (0x7_0C00_0000)
+SOFTGPU_COMPATIBLE = 'snapintosh,softgpu'
+SOFTGPU_REG_PROPERTY = 'snapintosh,softgpu-reg'     # the ADT interface to the kext (index into the adreno node's reg)
 
 
 def window_end(wide=False):
@@ -131,6 +146,176 @@ def stage2_audit_ranges(flags):
     return rows
 
 
+@dataclass(frozen=True)
+class SoftGpuSpec:
+    """The QEMU SoftGPU device as the board's own tree names it: page 0's physical address and its GIC INTID."""
+    page0: int
+    intid: int
+
+    def __post_init__(self):
+        if (self.page0 & (SOFTGPU_PAGE - 1) or not SOFTGPU_WINDOW[0] <= self.page0 <= SOFTGPU_WINDOW[1] - SOFTGPU_PAGE or
+                not SOFTGPU_INTID_FIRST <= self.intid <= SOFTGPU_INTID_LAST):
+            raise ValueError(f'SoftGPU page 0 {self.page0:#x} / INTID {self.intid} are not a device page and an SPI')
+
+    @property
+    def page1(self):
+        return self.page0 + SOFTGPU_PAGE
+
+    @property
+    def child(self):
+        return SOFTGPU_CHILD_BASE + self.page0
+
+
+def softgpu_params_words(spec):
+    """struct softgpu_params (compat/softgpu.h), in field order."""
+    if spec is None:
+        raise ValueError('no SoftGPU spec')
+    words = [SOFTGPU_MAGIC, SOFTGPU_F_PAGE0, spec.page0, spec.page1, spec.intid]
+    assert len(words) == SOFTGPU_PARAMS_WORDS
+    return words
+
+
+def softgpu_rows(words):
+    """compat/softgpu.h softgpu_rows: [(lo, hi)] of a valid block, or None."""
+    if len(words) != SOFTGPU_PARAMS_WORDS:
+        return None
+    magic, flags, page0, page1, intid = words
+    if (magic != SOFTGPU_MAGIC or flags != SOFTGPU_F_PAGE0 or page0 & (SOFTGPU_PAGE - 1) or
+            not SOFTGPU_WINDOW[0] <= page0 <= SOFTGPU_WINDOW[1] - SOFTGPU_PAGE or page1 != page0 + SOFTGPU_PAGE or not SOFTGPU_INTID_FIRST <= intid <= SOFTGPU_INTID_LAST):
+        return None
+    return [(page0, page0 + SOFTGPU_PAGE)]
+
+
+def softgpu_stage2_ranges(spec):
+    """The monitor's stage-2 row for page 0, as probes/xnuboot.stage2_ranges lists ranges (page 1 is absent)."""
+    if spec is None:
+        return []
+    return [(spec.page0, spec.page0 + SOFTGPU_PAGE, 'rw', 'SoftGPU page 0 (Device-nGnRE)')]
+
+
+def softgpu_audit_ranges(words):
+    """The page as tools/stage2audit.py audits a stopped monitor's stage 2: [(lo, hi, low, upper)] (none if invalid)."""
+    return [(lo, hi, S2_DEVICE_RW, S2_XN) for lo, hi in softgpu_rows(words) or ()]
+
+
+FDT_MAGIC = 0xD00DFEED
+
+
+def parse_fdt(blob):
+    """A flattened device tree as nested dicts: {'name', 'props': {name: bytes}, 'children': [...], 'parent'}.
+    Just enough of the format for QEMU's `dumpdtb` output (version 17, no overlays); anything else raises ValueError."""
+    if len(blob) < 40 or struct.unpack('>I', blob[:4])[0] != FDT_MAGIC:
+        raise ValueError('not a flattened device tree')
+    total, off_struct, off_strings, _, version, _, _, size_strings, size_struct = struct.unpack('>9I', blob[4:40])
+    if version < 16 or total > len(blob) or off_struct + size_struct > total or off_strings + size_strings > total:
+        raise ValueError('malformed device tree header')
+    strings = blob[off_strings:off_strings + size_strings]
+    root = {'name': '', 'props': {}, 'children': [], 'parent': None}
+    node, at, end = None, off_struct, off_struct + size_struct
+    while at < end:
+        token = struct.unpack('>I', blob[at:at + 4])[0]
+        at += 4
+        if token == 1:
+            stop = blob.index(b'\0', at)
+            name = blob[at:stop].decode()
+            at = (stop + 4) & ~3
+            if node is None:
+                node = root
+            else:
+                node = {'name': name, 'props': {}, 'children': [], 'parent': node}
+                node['parent']['children'].append(node)
+        elif token == 2:
+            if node is None:
+                raise ValueError('unbalanced device tree')
+            node = node['parent']
+        elif token == 3:
+            length, name_off = struct.unpack('>II', blob[at:at + 8])
+            data = blob[at + 8:at + 8 + length]
+            at = (at + 8 + length + 3) & ~3
+            name = strings[name_off:strings.index(b'\0', name_off)].decode()
+            node['props'][name] = data
+        elif token == 9:
+            break
+        elif token != 4:
+            raise ValueError(f'unknown device tree token {token}')
+    if node is not None:
+        raise ValueError('unbalanced device tree')
+    return root
+
+
+def _cells(node, name, default):
+    value = node['props'].get(name)
+    return struct.unpack('>I', value)[0] if value else default
+
+
+def _walk(node):
+    yield node
+    for child in node['children']:
+        yield from _walk(child)
+
+
+def _combine(blob, count):
+    out = 0
+    for (value,) in struct.iter_unpack('>I', blob[:4 * count]):
+        out = out << 32 | value
+    return out
+
+
+def softgpu_from_dtb(blob):
+    """the parse below, with every parse failure as ValueError."""
+    try:
+        return _softgpu_from_dtb(blob)
+    except (TypeError, KeyError, IndexError, struct.error, ZeroDivisionError, RecursionError, UnicodeDecodeError) as error:
+        raise ValueError(f'malformed device tree: {error!r}') from error
+
+
+def _softgpu_from_dtb(blob):
+    """The SoftGPU device in a QEMU `dumpdtb` tree: page 0 (reg 0, translated through every ancestor's `ranges`),
+    page 1 must follow it, and the SPI of `interrupts`. Exactly one node with compatible `snapintosh,softgpu`;
+    a missing node, a second one, a missing interrupt or a page 1 anywhere else raises ValueError."""
+    root = parse_fdt(blob)
+    found = [n for n in _walk(root)
+             if SOFTGPU_COMPATIBLE.encode() in n['props'].get('compatible', b'').split(b'\0')]
+    if len(found) != 1:
+        raise ValueError(f'the tree names {len(found)} {SOFTGPU_COMPATIBLE} nodes, not one')
+    node = found[0]
+    parent = node['parent']
+    ac, sc = _cells(parent, '#address-cells', 2), _cells(parent, '#size-cells', 1)
+    reg = node['props'].get('reg', b'')
+    if ac < 1 or sc < 1 or len(reg) != 8 * (ac + sc):
+        raise ValueError('the SoftGPU node needs exactly two (address, size) reg entries')
+    entries = [(_combine(reg[4 * (ac + sc) * i:], ac), _combine(reg[4 * (ac + sc) * i + 4 * ac:], sc)) for i in range(2)]
+    physical = []
+    for address, size in entries:
+        level = parent
+        while level['parent'] is not None:
+            ranges = level['props'].get('ranges')
+            if ranges:       # empty ranges is the identity
+                outer = level['parent']
+                ca, pa, cs = _cells(level, '#address-cells', 2), _cells(outer, '#address-cells', 2), _cells(level, '#size-cells', 1)
+                width = 4 * (ca + pa + cs)
+                for i in range(len(ranges) // width):
+                    row = ranges[i * width:]
+                    child, base, span = _combine(row, ca), _combine(row[4 * ca:], pa), _combine(row[4 * (ca + pa):], cs)
+                    if child <= address and address + size <= child + span:
+                        address = base + (address - child)
+                        break
+                else:
+                    raise ValueError('a SoftGPU reg entry lies outside its parent bus ranges')
+            level = level['parent']
+        physical.append((address, size))
+    (page0, size0), (page1, size1) = physical
+    if size0 != SOFTGPU_PAGE or size1 != SOFTGPU_PAGE or page1 != page0 + SOFTGPU_PAGE:
+        raise ValueError(f'SoftGPU pages {page0:#x}+{size0:#x}, {page1:#x}+{size1:#x} are not two adjacent 4 KiB pages')
+    irq = node['props'].get('interrupts', b'')
+    if len(irq) != 12:
+        raise ValueError('the SoftGPU node needs one three-cell interrupt')
+    kind, number, _ = struct.unpack('>3I', irq)
+    if kind != 0:
+        raise ValueError('the SoftGPU interrupt is not an SPI')
+    return SoftGpuSpec(page0, number + 32)
+
+
 def _phandle(dt):
     used = [struct.unpack('<I', props['AAPL,phandle'].value)[0]
             for props in dt.nodes.values() if 'AAPL,phandle' in props]
@@ -165,9 +350,11 @@ def display_slot(dt):
     return SLOT_NODE
 
 
-def prepare_tree(dt, spec, owned=()):
+def prepare_tree(dt, spec, owned=(), softgpu=None):
     """Add the ranges and nodes, all or nothing. `owned` is [(base, size)] the
-    guest's memory and the monitor's: the virtual DART window must miss it."""
+    guest's memory and the monitor's: the virtual DART window must miss it.
+    `softgpu` (SoftGpuSpec, SNAP_SOFTGPU=1): one more range for the device's page 0, appended as the last `reg` of
+    the `adreno` node and named by `snapintosh,softgpu-reg` (its index). Page 1 is never added."""
     bus = '/device-tree/arm-io'
     raw = dt.nodes[bus]['ranges']
     if raw.placeholder or len(raw.value) % 24:
@@ -176,6 +363,12 @@ def prepare_tree(dt, spec, owned=()):
     add = [(CHILD_BASE, GPU_PA, APERTURE_END - GPU_PA)]
     if spec.dart:
         add.append((DART_REG, DART_REG, DART_SPAN))
+    if softgpu is not None:
+        add.append((softgpu.child, softgpu.page0, SOFTGPU_PAGE))
+    for i, (c1, p1, s1) in enumerate(add):
+        for c2, p2, s2 in add[i + 1:]:
+            if c1 < c2 + s2 and c2 < c1 + s1 or p1 < p2 + s2 and p2 < p1 + s1:
+                raise ValueError(f'new arm-io ranges {c1:#x} and {c2:#x} overlap')
     for child, parent, span in add:
         for c, p, s in ranges:
             if child < c + s and c < child + span:
@@ -205,6 +398,9 @@ def prepare_tree(dt, spec, owned=()):
         'snapintosh,smc-hvc': struct.pack('<I', 1),
         'AAPL,phandle': struct.pack('<I', phandle + 2),
     }
+    if softgpu is not None:
+        gpu[SOFTGPU_REG_PROPERTY] = struct.pack('<I', len(gpu['reg']) // 16)
+        gpu['reg'] += struct.pack('<QQ', softgpu.child, SOFTGPU_PAGE)
     if spec.dart and not spec.ring_test:
         gpu['snapintosh,guest-fence-abi'] = struct.pack('<I', 1)
         gpu['snapintosh,guest-unmap-abi'] = struct.pack('<I', 1)
