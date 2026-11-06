@@ -87,7 +87,6 @@ static void block_hardware(const struct aes_key *key,const uint8_t input[16],uin
 #else
 static void block_hardware(const struct aes_key *key,const uint8_t input[16],uint8_t output[16])
 {
-#if defined(__aarch64__)
     uint8_t saved[32] __attribute__((aligned(16)));
     const uint8_t *round_key=key->round_key;uint64_t rounds=key->rounds;
     __asm__ volatile(
@@ -106,10 +105,6 @@ static void block_hardware(const struct aes_key *key,const uint8_t input[16],uin
         :[in]"r"(input),[out]"r"(output),[saved]"r"(saved)
         :"memory","cc");
     aes_clear(saved,sizeof(saved));
-#else
-    /* Software fallback on non-ARM64 host validation machines */
-    aes_block(key,input,output,0);
-#endif
 }
 #endif
 static int valid(const struct aes_key *key,const uint8_t *input,const uint8_t *output,int decrypt)
