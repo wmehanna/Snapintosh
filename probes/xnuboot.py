@@ -264,6 +264,9 @@ def stage2_ranges(work=None):
     if DISPLAY_TIMING is not None:
         import displaytiming
         ranges += displaytiming.stage2_ranges(DISPLAY_TIMING)
+    if SOFTGPU is not None:
+        import adreno
+        ranges += adreno.softgpu_stage2_ranges(SOFTGPU)
     if work:
         base, size = work
         ranges.append((base, base + size, 'ro', 'shadow table arena; private context excluded'))
@@ -582,7 +585,7 @@ def validate_layout():
     # The expanded registry needs more than the old 4 KiB slot at +0x2000.
     # Keep it in the dedicated interval after VNCR and before the device tree.
     if not (HANDOFF_PA + 0xc000 <= PARAMS_PA and
-            PARAMS_PA + (PARAMS_WORDS + 6 + 12 + 4) * 8 <= DEVICETREE_PA):  # + i2cinput, qcc2072wifi, displaytiming
+            PARAMS_PA + (PARAMS_WORDS + 6 + 12 + 4 + 5) * 8 <= DEVICETREE_PA):  # + i2cinput, qcc2072wifi, displaytiming, softgpu
         raise SystemExit('layout: parameters overlap VNCR or the device tree')
     if GUEST_PROFILE.boot_framebuffer_aux:
         import bootfb
@@ -1728,6 +1731,9 @@ QCC2072_WIFI = None
 # --present-beam's read-only DPU INTF_5 page (probes/displaytiming.SPEC), or None (off). run.py sets it from
 # SNAP_DISPLAY_TIMING=1; installed_fresh sets it for the offline image. Pair it with a -DSNAP_DISPLAY_TIMING=1 monitor.
 DISPLAY_TIMING = None
+# The QEMU SoftGPU device's page 0 (probes/adreno.SoftGpuSpec), or None (off). run.py sets it from SNAP_SOFTGPU=1 and a
+# QEMU dumpdtb pre-pass. Pair it with a -DSNAP_SOFTGPU=1 monitor and an Adreno profile (the `adreno` node carries the reg).
+SOFTGPU = None
 
 
 def const_region_contract(image, image_pa):
@@ -1907,6 +1913,14 @@ def params_blob(built):
         import displaytiming
         words += displaytiming.params_words(DISPLAY_TIMING)
         expected += displaytiming.PARAMS_WORDS
+    # struct softgpu_params (compat/softgpu.h), appended last and only for SNAP_SOFTGPU=1, for a monitor built with
+    # -DSNAP_SOFTGPU=1.
+    if SOFTGPU is not None:
+        import adreno
+        if GUEST_PROFILE.adreno is None:
+            raise SystemExit('SoftGPU needs an Adreno profile: its reg lives on the adreno node')
+        words += adreno.softgpu_params_words(SOFTGPU)
+        expected += adreno.SOFTGPU_PARAMS_WORDS
     # The other half of xnuboot.c's _Static_assert. A field added on one side
     # and not the other shifts every field after it, and the guest is then
     # handed a plausible address out of the wrong one -- which does not fault.
@@ -2115,7 +2129,7 @@ def build_devicetree(path=None, *, include_deferred=False):
         # assigns ids (dart-adreno carries its own, 31) and models are bound.
         import adreno
         dt.adreno = adreno.prepare_tree(dt, adreno_spec(),
-                                        [(r.base, r.size) for r in owned_ranges()])
+                                        [(r.base, r.size) for r in owned_ranges()], SOFTGPU)
         if EARLY_STOP is not None and EARLY_STOP.guest:
             adreno.advertise_early_stop(dt, EARLY_STOP.delay)
         if EARLY_STOP is not None and EARLY_STOP.net:

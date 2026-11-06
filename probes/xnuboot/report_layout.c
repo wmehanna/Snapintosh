@@ -109,6 +109,21 @@ static inline const struct display_timing_params *display_timing_block(const str
     return (const struct display_timing_params *)(const void *)after;
 }
 #endif
+#if SNAP_SOFTGPU
+/* -DSNAP_SOFTGPU=1 builds read SOFTGPU_PARAMS_WORDS more words after struct params (which holds the i2c-input block) and,
+ * when built in, the QCC2072 and display-timing blocks; the loader appends them only for SNAP_SOFTGPU=1. */
+static inline const struct softgpu_params *softgpu_block(const struct params *p)
+{
+    const uint64_t *after = (const uint64_t *)(const void *)(p + 1);
+#if SNAP_QCC2072_WIFI
+    after += QCC2072_WIFI_PARAMS_WORDS;
+#endif
+#if SNAP_DISPLAY_TIMING
+    after += DISPLAY_TIMING_PARAMS_WORDS;
+#endif
+    return (const struct softgpu_params *)(const void *)after;
+}
+#endif
 
 /* Events, in the order they happened. A first run is an exploration, so the
  * report is a log rather than a verdict.

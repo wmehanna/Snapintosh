@@ -58,6 +58,14 @@ if not QEMU_SMP.isdigit() or not 1 <= int(QEMU_SMP) <= 6:
 # SNAP_QEMU_ARGS: extra options appended to the QEMU command (diagnosis).
 
 
+def softgpu_prepass(qemu):
+    """SNAP_SOFTGPU=1: dump this exact QEMU command line's device tree and read the SoftGPU node from it. Returns the
+    SoftGpuSpec, or raises ValueError (no device on the command line, a second one, an odd layout): the boot is
+    refused, never started with a guessed address."""
+    import adreno
+    return adreno.softgpu_from_dtb(qemu.dumpdtb())
+
+
 def host_timebase(timer_hz, dilation=None):
     """The host counter rate the monitor is told (params clock_host_hz).
     SNAP_CLOCK_DILATION=K (1-16, default 1) declares K times the measured rate,
@@ -81,6 +89,8 @@ def host_timebase(timer_hz, dilation=None):
 # Set by main() for --qemu: the target is an emulator, so a quarantined monitor
 # (xnuboot_terminal.py) protects no hardware and its report may still be read.
 ON_QEMU = False
+# SNAP_SOFTGPU=1 with --qemu: the device the QEMU dumpdtb pre-pass found (adreno.SoftGpuSpec), else None.
+SOFTGPU_SPEC = None
 
 
 def terminal_or_qemu_diagnostic(result, environ=os.environ):
@@ -151,10 +161,9 @@ class Qemu:
         self.log = root / 'build' / 'qemu.log'
         self.proc = None
 
-    def __enter__(self):
-        Path(self.sock).unlink(missing_ok=True)
-        self.proc = subprocess.Popen(
-            [QEMU, '-machine', 'virt,virtualization=on,gic-version=3',
+    def command(self, machine=''):
+        """The QEMU command line. `machine` is appended to the first -machine option (the dumpdtb pre-pass)."""
+        return [QEMU, '-machine', 'virt,virtualization=on,gic-version=3' + machine,
              # 4 GiB because xnuboot needs half a gigabyte of contiguous free
              # physical memory for the image, its tables and the handoff, and
              # virt starts RAM at 0x40000000. -cpu max is what supplies FEAT_NV2.
@@ -168,8 +177,25 @@ class Qemu:
              '-serial', 'chardev:s',
              # Extra QEMU options for diagnosis, e.g. an HMP monitor socket to
              # read registers and memory while a P_CALL hangs.
-             *shlex.split(os.environ.get('SNAP_QEMU_ARGS', ''))],
-            stdout=subprocess.DEVNULL, stderr=open(self.log, 'w'))
+             *shlex.split(os.environ.get('SNAP_QEMU_ARGS', ''))]
+
+    def dumpdtb(self):
+        """The machine's device tree for exactly this command line, as bytes: QEMU writes it and exits before any guest
+        code (or the proxy socket) exists."""
+        out = Path(f'/tmp/snapintosh-dumpdtb-{os.getpid()}.dtb')
+        out.unlink(missing_ok=True)
+        try:
+            done = subprocess.run(self.command(f',dumpdtb={out}'), stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.PIPE, text=True, timeout=120)
+            if done.returncode or not out.exists():
+                raise ValueError(f'QEMU dumpdtb failed ({done.returncode}): {done.stderr.strip()[-300:]}')
+            return out.read_bytes()
+        finally:
+            out.unlink(missing_ok=True)
+
+    def __enter__(self):
+        Path(self.sock).unlink(missing_ok=True)
+        self.proc = subprocess.Popen(self.command(), stdout=subprocess.DEVNULL, stderr=open(self.log, 'w'))
         return self.sock
 
     def __exit__(self, *exc):
@@ -1350,6 +1376,11 @@ def run_xnuboot(proxy, info, code, guest_profile='j700ap-26A428',
         # SNAP_TXM_ASPACE_WIDE=1 goes with a -DSNAP_TXM_ASPACE_WIDE=1 monitor
         # (compat/txm.h A2); unset keeps the 8-page layout. Before place().
         xb.configure_txm_arena()
+        # SNAP_SOFTGPU=1 (main's dumpdtb pre-pass) goes with a -DSNAP_SOFTGPU=1 monitor: page 0 in stage 2 and the
+        # `adreno` node's last reg. The reg lives on the Adreno node, so an Adreno profile is required.
+        xb.SOFTGPU = SOFTGPU_SPEC
+        if xb.SOFTGPU is not None and xb.GUEST_PROFILE.adreno is None:
+            raise ValueError('SNAP_SOFTGPU=1 needs an Adreno profile')
         # SNAP_ADRENO_VA_WIDE=1 goes with a -DADRENO_VA_WIDE=1 monitor and kext and a q1n1
         # `cp-fence/adopt --va-wide` CB0 (agents/gpu-va-wide); unset keeps the 3 GiB window. Before place().
         if xb.configure_adreno_va_wide() and xb.GUEST_PROFILE.adreno is None:
@@ -3440,11 +3471,23 @@ def main():
     if args.probe == 'xnuboot':
         boot_options['qemu'] = args.qemu
 
+    if os.environ.get('SNAP_SOFTGPU'):
+        if os.environ['SNAP_SOFTGPU'] != '1':
+            ap.error('SNAP_SOFTGPU must be 1')
+        if not args.qemu or args.probe != 'xnuboot':
+            ap.error('SNAP_SOFTGPU=1 needs --qemu and the xnuboot probe: the device is read from QEMU\'s tree')
     blob = build(args.probe, ROOT / 'build')
     if args.qemu:
-        global ON_QEMU
+        global ON_QEMU, SOFTGPU_SPEC
         ON_QEMU = True
-        with Qemu(ROOT) as sock:
+        qemu = Qemu(ROOT)
+        if os.environ.get('SNAP_SOFTGPU'):
+            try:
+                SOFTGPU_SPEC = softgpu_prepass(qemu)
+            except ValueError as error:
+                return verdict(EXIT_LOADER, f'SNAP_SOFTGPU=1 refused: {error}')
+            print(f'  SoftGPU: page 0 {SOFTGPU_SPEC.page0:#x}, INTID {SOFTGPU_SPEC.intid} (QEMU dumpdtb)')
+        with qemu as sock:
             proxy = connect(sock)
             try:
                 return run(proxy, blob, args.probe, 'QEMU -cpu max', boot_options)

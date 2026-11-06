@@ -1175,6 +1175,11 @@ static int monitor_call_impl(struct context *c, uint64_t *frame, uint64_t *elr)
         if (display_timing_window(display_timing_block(c->params), pte_pa))
             is_device = 1;
 #endif
+#if SNAP_SOFTGPU
+        /* The SoftGPU device's page 0 (compat/softgpu.h): passthrough at stage 2. */
+        if (softgpu_window(softgpu_block(c->params), pte_pa))
+            is_device = 1;
+#endif
         if (leaf.valid && points_outside && is_device) {
             /* A device the guest's own tree names, so the kernel is right to
              * ask and we are right to answer. The leaf goes in.

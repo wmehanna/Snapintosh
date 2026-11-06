@@ -170,15 +170,17 @@ static int vcpu_stage2_prepare(struct context *c, struct vcpu *v)
     if (!root) return -3;
     struct shadow s2 = {.txsz = S2_TXSZ, .root = root, .alloc = table_alloc,
                         .read = mem_read, .write = mem_write, .ctx = c};
-#if SNAP_I2C_INPUT && SNAP_QCC2072_WIFI
-    struct stage2_range ranges[8 + I2C_INPUT_STAGE2_MAX + QCC2072_WIFI_STAGE2_MAX + SNAP_DISPLAY_TIMING_ROWS];
-#elif SNAP_I2C_INPUT
-    struct stage2_range ranges[8 + I2C_INPUT_STAGE2_MAX + SNAP_DISPLAY_TIMING_ROWS];
-#elif SNAP_QCC2072_WIFI
-    struct stage2_range ranges[8 + QCC2072_WIFI_STAGE2_MAX + SNAP_DISPLAY_TIMING_ROWS];
-#else
-    struct stage2_range ranges[8 + SNAP_DISPLAY_TIMING_ROWS];
+    /* Base rows (RAM, panic page, scratch, panel, work area) and the Adreno block (up to three) are 8; each opt-in
+     * block adds its own named maximum. A block that outgrows its constant is a build error, not an overflow. */
+    enum { S2_RANGES_MAX = 8
+#if SNAP_I2C_INPUT
+        + I2C_INPUT_STAGE2_MAX
 #endif
+#if SNAP_QCC2072_WIFI
+        + QCC2072_WIFI_STAGE2_MAX
+#endif
+        + SNAP_DISPLAY_TIMING_ROWS + SNAP_SOFTGPU_ROWS };
+    struct stage2_range ranges[S2_RANGES_MAX];
     unsigned count = 0;
     uint64_t panic_page=p->scratch_pa-SPTM_PANIC_PAGE_SIZE;
     ranges[count++] = (struct stage2_range){
@@ -232,6 +234,16 @@ static int vcpu_stage2_prepare(struct context *c, struct vcpu *v)
     {
         int rows = display_timing_rows(display_timing_block(p), ranges + count);
         if (rows < 0) return -43;
+        count += (unsigned)rows;
+    }
+#endif
+#if SNAP_SOFTGPU
+    /* The SoftGPU device's page 0 only, read-write Device-nGnRE, after an exact allow-list check of the loader's words
+     * (compat/softgpu.h): anything else, a missing block included, refuses the boot before a guest runs. Page 1 is
+     * never mapped. */
+    {
+        int rows = softgpu_rows(softgpu_block(p), ranges + count);
+        if (rows < 0) return -44;
         count += (unsigned)rows;
     }
 #endif

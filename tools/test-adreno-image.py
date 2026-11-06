@@ -295,6 +295,91 @@ class Adoption(unittest.TestCase):
         self.assertEqual(spans, [(0xf0000000, 0xfcc00000), (0xfec00000, 0x100000000)])
 
 
+class SoftGpuTree(unittest.TestCase):
+    """SoftGPU wave W1 (plans/p6-softgpu-integration.md): the device's page 0 in the ADT and in stage 2, only with
+    SNAP_SOFTGPU (xb.SOFTGPU); page 1 never. The property is the interface to the kext."""
+    SPEC = adreno.SoftGpuSpec(0x0C000000, 144)
+
+    def setUp(self):
+        xb.SOFTGPU = None
+
+    def tearDown(self):
+        xb.SOFTGPU = None
+        xb.ADRENO_RECORD = None
+        xb.configure_guest('j700ap-26A428-sep-preload')
+
+    def test_default_tree_has_none(self):
+        dt = tree(FULL)
+        self.assertNotIn(adreno.SOFTGPU_REG_PROPERTY, dt.nodes[adreno.GPU_NODE])
+        self.assertEqual(len(dt.nodes[adreno.GPU_NODE]['reg'].value), 16 * 3)
+        self.assertEqual([r for r in struct.iter_unpack('<3Q', dt.nodes['/device-tree/arm-io']['ranges'].value)
+                          if r[1] == 0x0C000000], [])
+        self.assertEqual([w for w in xb.stage2_ranges() if 'SoftGPU' in w[3]], [])
+
+    def test_tree_with_softgpu(self):
+        xb.SOFTGPU = self.SPEC
+        base = tree(FULL)
+        gpu = base.nodes[adreno.GPU_NODE]
+        reg = list(struct.iter_unpack('<2Q', gpu['reg'].value))
+        self.assertEqual(reg[:3], [(adreno.CHILD_BASE, 0x37000), (adreno.CHILD_BASE + 0x3C000 - 0x0, 0x4000),
+                                   (adreno.CHILD_BASE + 0x9E000, 0x2000)])
+        self.assertEqual(reg[3], (0x7_0C000000, 0x1000))                 # page 0 only, last
+        self.assertEqual(len(reg), 4)
+        index = struct.unpack('<I', gpu[adreno.SOFTGPU_REG_PROPERTY].value)[0]
+        self.assertEqual(index, 3)
+        self.assertEqual(reg[index], (self.SPEC.child, 0x1000))
+        ranges = list(struct.iter_unpack('<3Q', base.nodes['/device-tree/arm-io']['ranges'].value))
+        self.assertIn((0x7_0C000000, 0x0C000000, 0x1000), ranges)
+        self.assertFalse(any(p < 0x0C002000 and 0x0C001000 < p + sp for _, p, sp in ranges if sp),
+                         'page 1 is in no arm-io range')
+        self.assertEqual(xb.device_windows(base, 'adreno')[-1], (0x0C000000, 0x1000))
+        # the other Adreno properties are untouched
+        xb.SOFTGPU = None
+        plain = tree(FULL).nodes[adreno.GPU_NODE]
+        for key in plain:
+            self.assertEqual(gpu[key].value if key != 'reg' else gpu[key].value[:48], plain[key].value, key)
+
+    def test_nodart_profile_too(self):
+        xb.SOFTGPU = self.SPEC
+        gpu = tree(NODART).nodes[adreno.GPU_NODE]
+        self.assertEqual(struct.unpack('<I', gpu[adreno.SOFTGPU_REG_PROPERTY].value)[0], 3)
+
+    def test_overlap_refuses(self):
+        xb.configure_guest(FULL)
+        xb.place(0x8c0000000, guest_span=8192 << 20)
+        dt = DeviceTree(xb.DeviceTree(Path(xb.DEFAULT_DEVICETREE).read_bytes()).serialize())
+        dt.resolve_placeholders()
+        before = dt.serialize()
+        with self.assertRaises(ValueError):                              # guest memory over page 0
+            adreno.prepare_tree(dt, adreno.AdrenoSpec(), [(0x0C000000, 1 << 20)], self.SPEC)
+        self.assertEqual(dt.serialize(), before)
+
+    def test_stage2_has_page_zero_only(self):
+        xb.SOFTGPU = self.SPEC
+        xb.configure_guest(FULL)
+        xb.place(0x8c0000000, guest_span=8192 << 20)
+        ranges = xb.stage2_ranges()
+        self.assertEqual([(lo, hi, a) for lo, hi, a, what in ranges if 'SoftGPU' in what],
+                         [(0x0C000000, 0x0C001000, 'rw')])
+        self.assertEqual(xb.stage2_where(0x0C000000, ranges)[2], 'rw')
+        self.assertIsNone(xb.stage2_where(0x0C001000, ranges))          # page 1
+        self.assertIsNone(xb.stage2_where(0x0BFFFFFC, ranges))
+
+    def test_params_carry_the_block(self):
+        xb.configure_guest(FULL)
+        xb.place(0x8c0000000, guest_span=8192 << 20)
+        xb.ADRENO_RECORD = adreno.fixture_record()
+        kc = ROOT / 'build/auxkc-20260925/aux-hello.kc'
+        if not kc.exists():
+            self.skipTest('pinned aux-hello.kc not present')
+        with contextlib.redirect_stdout(io.StringIO()):
+            plain = xb.build(str(xb.DEFAULT_KERNELCACHE), auxkc=str(kc))['chunks'][xb.PARAMS_PA]
+            xb.SOFTGPU = self.SPEC
+            built = xb.build(str(xb.DEFAULT_KERNELCACHE), auxkc=str(kc))['chunks'][xb.PARAMS_PA]
+        self.assertEqual(built[:len(plain)], plain)
+        self.assertEqual(list(struct.unpack('<5Q', built[len(plain):])), adreno.softgpu_params_words(self.SPEC))
+
+
 class Params(unittest.TestCase):
     def tearDown(self):
         xb.ADRENO_RECORD = None
