@@ -6,6 +6,7 @@
  * softgpu_protocol.h is a verbatim copy of the device's wire header (p6d include/); change both together. */
 #pragma once
 #include "softgpu_protocol.h"
+#include "adreno-submit.h"
 
 #define SOFTGPU_KCMD_STREAM 0x1010u            /* adreno_submit_header.type of struct sgpu_kcmd_stream */
 #define SGPU_GUEST_RING_ENTRIES 256u           /* RING_ENTRIES the kext programs (1.9) */
@@ -33,11 +34,18 @@ struct sgpu_guest_arena {                      /* byte ring reclaimed in seqno o
     struct { uint64_t seqno, bytes; } fifo[SGPU_GUEST_FIFO];
     uint32_t head, count;
 };
+struct sgpu_guest_obj {                        /* a map's memory object: its id and the device epoch it belongs to */
+    uint64_t epoch;
+    uint32_t id;                               /* 0 none */
+};
 struct sgpu_guest_bt_in {                      /* one entry of IOGPU's segment resource list */
     uint32_t mem_id, usage;                    /* usage: ADRENO_USAGE_* bits */
     uint32_t read_only;                        /* backing direction is Out: never WRITE */
     uint64_t offset, length, resource_id;
 };
+
+/* The runs captured for the maps of one stream share one pool that doubles from 64 entries up to this many. */
+#define SGPU_GUEST_POOL_MAX_RUNS SGPU_GUEST_MAX_RUNS
 
 #ifdef __cplusplus
 extern "C" {
@@ -85,6 +93,33 @@ int sgpu_guest_kcmd_stream(const void *command, uint64_t available, uint64_t epo
                            uint32_t *stream_bytes);
 /* Table of 1.6: the IOGPU status word of a descriptor result (SGPU_E_SKIPPED never maps alone: INVALID). */
 uint32_t sgpu_guest_iogpu_status(int32_t sgpu_status);
+/* A device status word from a completion record, as a result: anything outside [SGPU_E_SKIPPED, 0] is SGPU_E_HOST
+ * (a positive value would otherwise reach IOGPU as ADRENO_SUBMIT_GENERIC). */
+int32_t sgpu_guest_device_status(int32_t status);
+/* Host-only codes (SGPU_GUEST_BUSY, SGPU_GUEST_E_RECORD) never reach IOGPU: BUSY is SGPU_E_QUOTA, a bad record
+ * SGPU_E_LOST. Every other result, SGPU_E_* and ADRENO_*, passes unchanged. */
+int sgpu_guest_public_result(int result);
+/* The result of a housekeeping descriptor (DESTROY_MEMORY, queued for maps that gave up their backing) as the stream
+ * that happened to flush it sees it: only a lost device (LOST, a bad record, a timeout) reaches it, 0 otherwise. */
+int sgpu_guest_housekeeping_result(int result);
+/* The result of a stream after the device was reset for it: unchanged when RESET_DEVICE confirmed (RESET_DONE), else
+ * ADRENO_SUBMIT_E_UNCERTAIN (the device may still DMA, so IOGPU must keep the pins: retainAfterTimeout). */
+int sgpu_guest_reset_result(int result, int reset_confirmed);
+/* ---- per-stream bookkeeping ---- */
+/* Next size of the run pool: 64, then doubling, 0 once `cap` is SGPU_GUEST_POOL_MAX_RUNS (the stream is refused). */
+uint32_t sgpu_guest_pool_grow(uint32_t cap);
+/* Slots of the key set for `n` keys: a power of two, at least twice n and at least 16. */
+uint32_t sgpu_guest_set_slots(uint32_t n);
+/* Insert a non-zero key into a zeroed open-addressing table of `slots` (a power of two, at most half full): 1 when new,
+ * 0 when already there, SGPU_E_QUOTA when full. */
+int sgpu_guest_set_add(uint64_t *table, uint32_t slots, uint64_t key);
+/* [pa, pa + bytes) lies inside [base, base + len), without overflow. */
+int sgpu_guest_range_inside(uint64_t pa, uint64_t bytes, uint64_t base, uint64_t len);
+/* ---- memory object ids (atomic: read by the stream, retired by the map under its own lock) ---- */
+uint32_t sgpu_guest_obj_get(const struct sgpu_guest_obj *, uint64_t epoch);   /* id when it belongs to epoch, else 0 */
+void sgpu_guest_obj_set(struct sgpu_guest_obj *, uint32_t id, uint64_t epoch);
+/* Forget the object: its id (0 when none) and *epoch. The caller sends the DESTROY (AdrenoSoftGPUMapGone). */
+uint32_t sgpu_guest_obj_take(struct sgpu_guest_obj *, uint64_t *epoch);
 /* Command-buffer result of its segments (1.5): the first that is neither OK nor SKIPPED, else OK. */
 int32_t sgpu_guest_first_failure(const int32_t *status, uint32_t n);
 #ifdef __cplusplus

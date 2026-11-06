@@ -237,3 +237,61 @@ int32_t sgpu_guest_first_failure(const int32_t *status, uint32_t n)
         if (status[i] != SGPU_OK && status[i] != SGPU_E_SKIPPED) return status[i];
     return SGPU_OK;
 }
+int32_t sgpu_guest_device_status(int32_t s)
+{
+    return s > 0 || s < SGPU_E_SKIPPED ? SGPU_E_HOST : s;
+}
+int sgpu_guest_public_result(int r)
+{
+    if (r == SGPU_GUEST_BUSY) return SGPU_E_QUOTA;
+    if (r == SGPU_GUEST_E_RECORD) return SGPU_E_LOST;
+    return r;
+}
+int sgpu_guest_housekeeping_result(int r)
+{
+    return r == SGPU_E_LOST || r == SGPU_E_TIMEOUT || r == SGPU_GUEST_E_RECORD ? SGPU_E_LOST : 0;
+}
+int sgpu_guest_reset_result(int r, int confirmed)
+{
+    return confirmed ? r : ADRENO_SUBMIT_E_UNCERTAIN;
+}
+uint32_t sgpu_guest_pool_grow(uint32_t cap)
+{
+    if (cap >= SGPU_GUEST_POOL_MAX_RUNS) return 0;
+    if (cap < 64) return 64;
+    return cap * 2 > SGPU_GUEST_POOL_MAX_RUNS ? SGPU_GUEST_POOL_MAX_RUNS : cap * 2;
+}
+uint32_t sgpu_guest_set_slots(uint32_t n)
+{
+    uint32_t slots = 16;
+    while (slots / 2 < n && slots < 0x80000000u) slots <<= 1;
+    return slots;
+}
+int sgpu_guest_set_add(uint64_t *table, uint32_t slots, uint64_t key)
+{
+    if (!table || !key || !slots || (slots & (slots - 1))) return SGPU_E_FORMAT;
+    uint32_t at = (uint32_t)(((key >> 4) * 0x9e3779b97f4a7c15ull) >> 32) & (slots - 1);
+    for (uint32_t probe = 0; probe < slots; probe++, at = (at + 1) & (slots - 1)) {
+        if (table[at] == key) return 0;
+        if (!table[at]) { table[at] = key; return 1; }
+    }
+    return SGPU_E_QUOTA;
+}
+int sgpu_guest_range_inside(uint64_t pa, uint64_t bytes, uint64_t base, uint64_t len)
+{
+    return bytes && pa >= base && pa - base < len && bytes <= len - (pa - base);
+}
+uint32_t sgpu_guest_obj_get(const struct sgpu_guest_obj *o, uint64_t epoch)
+{
+    return __atomic_load_n(&o->epoch, __ATOMIC_ACQUIRE) == epoch ? __atomic_load_n(&o->id, __ATOMIC_ACQUIRE) : 0;
+}
+void sgpu_guest_obj_set(struct sgpu_guest_obj *o, uint32_t id, uint64_t epoch)
+{
+    __atomic_store_n(&o->epoch, epoch, __ATOMIC_RELEASE);
+    __atomic_store_n(&o->id, id, __ATOMIC_RELEASE);
+}
+uint32_t sgpu_guest_obj_take(struct sgpu_guest_obj *o, uint64_t *epoch)
+{
+    *epoch = __atomic_load_n(&o->epoch, __ATOMIC_ACQUIRE);
+    return __atomic_exchange_n(&o->id, 0, __ATOMIC_ACQ_REL);
+}

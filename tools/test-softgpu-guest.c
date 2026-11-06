@@ -362,6 +362,138 @@ static void test_dispatch(void)
     CHECK(adreno_kernel_command(u, sizeof u, &with) == ADRENO_SUBMIT_E_COMMAND && streams == 1);
 }
 
+
+/* ---- the W2 audit fixes (plans/p6-w2-fixes.md), as far as they are decisions in compat/softgpu-guest.c ---- */
+/* 1. A map's object is retired by whatever unpins its backing: after the take the stream finds no id (so it creates a
+ *    new object over the new pages) and the old id goes to the DESTROY queue exactly once. */
+static void test_obj_retire(void)
+{
+    struct sgpu_guest_obj o = {0};
+    uint64_t epoch = 0;
+    CHECK(sgpu_guest_obj_get(&o, 7) == 0 && sgpu_guest_obj_take(&o, &epoch) == 0);
+    sgpu_guest_obj_set(&o, 42, 7);
+    CHECK(sgpu_guest_obj_get(&o, 7) == 42);
+    CHECK(sgpu_guest_obj_get(&o, 8) == 0);                              /* another epoch: forgotten by a reset */
+    /* backing swap: unpin -> take; a stream after it must not bind id 42 */
+    CHECK(sgpu_guest_obj_take(&o, &epoch) == 42 && epoch == 7);
+    CHECK(sgpu_guest_obj_get(&o, 7) == 0);
+    CHECK(sgpu_guest_obj_take(&o, &epoch) == 0);                        /* a second unpin queues nothing */
+    sgpu_guest_obj_set(&o, 43, 7);                                      /* the new pages get a new object */
+    CHECK(sgpu_guest_obj_get(&o, 7) == 43);
+}
+/* 2, 6. DESTROY failures stay out of streams; device statuses stay in range; host codes do not leak. */
+static void test_results(void)
+{
+    CHECK(sgpu_guest_housekeeping_result(0) == 0);
+    CHECK(sgpu_guest_housekeeping_result(SGPU_E_OBJECT) == 0 && sgpu_guest_housekeeping_result(SGPU_E_FORMAT) == 0);
+    CHECK(sgpu_guest_housekeeping_result(SGPU_E_QUOTA) == 0 && sgpu_guest_housekeeping_result(SGPU_GUEST_BUSY) == 0);
+    CHECK(sgpu_guest_housekeeping_result(SGPU_E_LOST) == SGPU_E_LOST && sgpu_guest_housekeeping_result(SGPU_E_TIMEOUT) == SGPU_E_LOST);
+    CHECK(sgpu_guest_housekeeping_result(SGPU_GUEST_E_RECORD) == SGPU_E_LOST);
+    CHECK(sgpu_guest_device_status(0) == 0 && sgpu_guest_device_status(SGPU_E_SKIPPED) == SGPU_E_SKIPPED);
+    CHECK(sgpu_guest_device_status(SGPU_E_FORMAT) == SGPU_E_FORMAT && sgpu_guest_device_status(SGPU_E_LOST) == SGPU_E_LOST);
+    CHECK(sgpu_guest_device_status(1) == SGPU_E_HOST && sgpu_guest_device_status(0x7fffffff) == SGPU_E_HOST);
+    CHECK(sgpu_guest_device_status(-16) == SGPU_E_HOST && sgpu_guest_device_status(-92) == SGPU_E_HOST);
+    CHECK(sgpu_guest_device_status((int32_t)0x80000000) == SGPU_E_HOST);
+    /* 1 would be ADRENO_SUBMIT_GENERIC at objects.cpp: IOGPU would run the command natively */
+    CHECK(sgpu_guest_public_result(sgpu_guest_device_status(ADRENO_SUBMIT_GENERIC)) != ADRENO_SUBMIT_GENERIC);
+    CHECK(sgpu_guest_public_result(SGPU_GUEST_BUSY) == SGPU_E_QUOTA && sgpu_guest_public_result(SGPU_GUEST_E_RECORD) == SGPU_E_LOST);
+    CHECK(sgpu_guest_public_result(0) == 0 && sgpu_guest_public_result(SGPU_E_TIMEOUT) == SGPU_E_TIMEOUT);
+    CHECK(sgpu_guest_public_result(ADRENO_SUBMIT_E_UNCERTAIN) == ADRENO_SUBMIT_E_UNCERTAIN);
+    CHECK(sgpu_guest_public_result(ADRENO_SUBMIT_E_INACTIVE) == ADRENO_SUBMIT_E_INACTIVE);
+    /* 3. an unconfirmed reset never reports the device lost (IOGPU would unpin pages it may still write) */
+    CHECK(sgpu_guest_reset_result(SGPU_E_LOST, 1) == SGPU_E_LOST);
+    CHECK(sgpu_guest_reset_result(SGPU_E_LOST, 0) == ADRENO_SUBMIT_E_UNCERTAIN);
+    CHECK(sgpu_guest_reset_result(ADRENO_SUBMIT_E_UNCERTAIN, 1) == ADRENO_SUBMIT_E_UNCERTAIN);
+}
+/* 4. the run pool and the distinct-map set */
+static void test_pool(void)
+{
+    uint32_t cap = 0, steps = 0;
+    while ((cap = sgpu_guest_pool_grow(cap))) { steps++; CHECK(cap >= 64 && cap <= SGPU_GUEST_POOL_MAX_RUNS); }
+    CHECK(steps == 11 && sgpu_guest_pool_grow(SGPU_GUEST_POOL_MAX_RUNS) == 0);   /* 64, 128 ... 65536 */
+    CHECK(sgpu_guest_pool_grow(0) == 64 && sgpu_guest_pool_grow(64) == 128 && sgpu_guest_pool_grow(40000) == SGPU_GUEST_POOL_MAX_RUNS);
+    CHECK(sgpu_guest_set_slots(0) == 16 && sgpu_guest_set_slots(8) == 16 && sgpu_guest_set_slots(9) == 32);
+    CHECK(sgpu_guest_set_slots(65535) == 131072);
+    /* a list of 65535 entries naming 3 distinct maps captures 3 map's runs, not 65535 */
+    const uint32_t slots = sgpu_guest_set_slots(65535);
+    uint64_t *tab = calloc(slots, sizeof *tab);
+    uint64_t maps[3] = { 0xffffff8000100000ull, 0xffffff8000100100ull, 0xffffff8000200000ull };
+    unsigned captured = 0;
+    for (unsigned i = 0; i < 65535; i++) {
+        int r = sgpu_guest_set_add(tab, slots, maps[i % 3]);
+        CHECK(r == 0 || r == 1);
+        captured += r == 1;
+    }
+    CHECK(captured == 3);
+    free(tab);
+    /* every distinct key of a full-size list is accepted, once */
+    tab = calloc(slots, sizeof *tab);
+    for (unsigned i = 0; i < 65535; i++) CHECK(sgpu_guest_set_add(tab, slots, 0xffffff8000000000ull + (uint64_t)i * 0x40) == 1);
+    for (unsigned i = 0; i < 65535; i++) CHECK(sgpu_guest_set_add(tab, slots, 0xffffff8000000000ull + (uint64_t)i * 0x40) == 0);
+    free(tab);
+    uint64_t small[16] = {0};
+    for (unsigned i = 1; i <= 16; i++) CHECK(sgpu_guest_set_add(small, 16, i * 16) == 1);
+    CHECK(sgpu_guest_set_add(small, 16, 17 * 16) == SGPU_E_QUOTA && sgpu_guest_set_add(small, 16, 16) == 0);
+    CHECK(sgpu_guest_set_add(small, 16, 0) == SGPU_E_FORMAT && sgpu_guest_set_add(small, 12, 5) == SGPU_E_FORMAT);
+}
+/* 8. the self-test target must lie inside the panel */
+static void test_range(void)
+{
+    const uint64_t base = 0xbd000000ull, len = 2880ull * 1800 * 4;
+    CHECK(sgpu_guest_range_inside(base, PANEL_ROWS_BYTES, base, len));
+    CHECK(sgpu_guest_range_inside(base + len - 64, 64, base, len) && sgpu_guest_range_inside(base, len, base, len));
+    CHECK(!sgpu_guest_range_inside(base + len - 63, 64, base, len) && !sgpu_guest_range_inside(base, len + 1, base, len));
+    CHECK(!sgpu_guest_range_inside(base - 1, 16, base, len) && !sgpu_guest_range_inside(base + len, 1, base, len));
+    CHECK(!sgpu_guest_range_inside(base, 0, base, len));
+    CHECK(!sgpu_guest_range_inside(0xfffffffffffff000ull, 0x2000, 0xfffffffffffff000ull, 0x1000));    /* no overflow */
+    CHECK(!sgpu_guest_range_inside(base, ~0ull, base, len) && !sgpu_guest_range_inside(0, 16, base, len));
+}
+/* 2, 5. A stream of 300 new maps: each CREATE completes before the next (so a device refusal never records an id and
+ * the ring never fills); a SUBMIT meeting a full ring drains and retries instead of leaking SGPU_GUEST_BUSY. */
+static void test_create_flow(void)
+{
+    static struct sgpu_desc slots[SGPU_GUEST_RING_ENTRIES];
+    struct sgpu_guest_ring r;
+    struct sgpu_guest_arena arena;
+    struct model m = {0};
+    struct sgpu_desc d;
+    int32_t st[SGPU_GUEST_RING_ENTRIES];
+    m.arena = calloc(1, SGPU_GUEST_ARENA_BYTES);
+    m.arena_size = SGPU_GUEST_ARENA_BYTES;
+    m.next_seqno = 1;
+    CHECK(sgpu_guest_ring_init(&r, slots, SGPU_GUEST_RING_ENTRIES) == 0);
+    sgpu_guest_arena_init(&arena, SGPU_GUEST_ARENA_BYTES);
+    struct sgpu_mem_run run = { 0x80000000ull, 0x4000 };
+    uint32_t recorded = 0, refused = 0;
+    for (uint32_t id = 2; id < 302; id++) {
+        uint64_t off;
+        CHECK(sgpu_guest_arena_alloc(&arena, 64, r.next_seqno, &off) == 0);
+        /* every 7th object is refused by the device: size 0 is a malformed CREATE the validator rejects */
+        int bad = id % 7 == 0;
+        int len = sgpu_guest_pkt_create_memory(m.arena + off, 64, id, 0, 0x4000, 0, 0, &run, 1);
+        CHECK(len == 64);
+        if (bad) m.arena[off + 2] = 2;                                   /* undefined packet flag */
+        sgpu_guest_desc_kernel(&d, 0, off, 64, SGPU_GUEST_NO_STAMP, 0);
+        CHECK(sgpu_guest_ring_push(&r, &d) != 0);
+        int dev = device_run(&m, &r, r.produced);
+        CHECK(retire_all(&r, &m, &arena, st) == 1);
+        CHECK((st[0] != 0) == bad && (dev != 0) == bad);
+        if (!st[0]) recorded++; else refused++;                          /* the id is recorded only on a completed OK */
+    }
+    CHECK(recorded + refused == 300 && refused == 43 && recorded == 257);
+    CHECK(r.retired == r.produced && arena.used == 0);
+    /* a full ring at SUBMIT time: push says busy, a drain frees it, the retry takes it */
+    sgpu_guest_desc_kernel(&d, 0, 0, 0, SGPU_GUEST_NO_STAMP, 0);
+    while (sgpu_guest_ring_free(&r)) CHECK(sgpu_guest_ring_push(&r, &d) != 0);
+    CHECK(sgpu_guest_ring_push(&r, &d) == 0);                            /* sgPush -> SGPU_GUEST_BUSY */
+    CHECK(sgpu_guest_public_result(SGPU_GUEST_BUSY) == SGPU_E_QUOTA);    /* what used to reach IOGPU as 0xa */
+    CHECK(retire_all(&r, &m, &arena, 0) == 0);                           /* nothing executed yet: still full */
+    device_run(&m, &r, r.produced);
+    CHECK(retire_all(&r, &m, &arena, st) == SGPU_GUEST_RING_ENTRIES);
+    CHECK(sgpu_guest_ring_push(&r, &d) != 0);
+    free(m.arena);
+}
+
 /* ---- a long mixed run: descriptors of every kind through ring, arena and device model, wrapping both ---- */
 static void test_soak(void)
 {
@@ -420,6 +552,11 @@ int main(void)
     test_bt();
     test_kcmd();
     test_status();
+    test_obj_retire();
+    test_results();
+    test_pool();
+    test_range();
+    test_create_flow();
     test_dispatch();
     test_soak();
     printf("test-softgpu-guest: %u checks, %u failures\n", checks, failures);
