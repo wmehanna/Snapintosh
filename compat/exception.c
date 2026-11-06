@@ -43,12 +43,18 @@ int exception_kernel_page_fault(uint64_t esr)
     return (ec == 0x21 || ec == 0x25) && fsc >= 4 && fsc <= 15;
 }
 
+/* A zero target is a legal EL0 return: the instruction fetch at VA 0 faults
+ * at EL0 and XNU handles it as that process's crash. XNU does ERET there,
+ * from thread_bootstrap_return: the refused frames held pc 0, sp 0, SPSR
+ * EL0t and only x0 = a pid, x1 = 1 (thread_set_child's child marker), a new
+ * process whose user state was never filled in (likely a failed spawn).
+ * Refusing it stopped the whole machine with exit 7 (p5r127 .. p5r243). */
 int exception_user_return(uint32_t instruction, uint64_t virtual_hcr,
     uint64_t pc, uint64_t guest_spsr, uint64_t *physical_spsr)
 {
     const uint64_t host_bits = (1UL << 34) | (1UL << 31) | (1UL << 27);
     if (!physical_spsr || instruction != 0xd69f03e0U ||
-        (virtual_hcr & host_bits) != host_bits || !pc || pc >= (1UL << 47) ||
+        (virtual_hcr & host_bits) != host_bits || pc >= (1UL << 47) ||
         (pc & 3) || (guest_spsr & 31) || (guest_spsr >> 32) ||
         (guest_spsr & ((1UL << 20) | (1UL << 5)))) return 0;
     *physical_spsr = guest_spsr;

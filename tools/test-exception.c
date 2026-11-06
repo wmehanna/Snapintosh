@@ -94,7 +94,7 @@ int main(void)
         case 1:h&=~(1UL<<31);break;
         case 2:h&=~(1UL<<27);break;
         case 3:p++;break;
-        case 4:p=0;break;
+        case 4:p=2;break; /* misaligned; zero itself is a legal target below */
         case 5:p=1UL<<47;break;
         case 6:p=pc;break;
         case 7:s=4;break;
@@ -106,6 +106,21 @@ int main(void)
         CHECK(!exception_user_return(insn,h,p,s,&out) && out==0xdead);
     }
     CHECK(!exception_user_return(0xd69f03e0,hcr,user_pc,0,0));
+    /* Exit 7 regression (p5r127 .. p5r243): XNU's thread_bootstrap_return
+     * ERETs a new process's empty state, ELR 0 and SPSR 0 (EL0t), from
+     * EL1t (physical SPSR 0x604023c4) under the nested HCR 0x488000000. The
+     * EL0 fetch at 0 faults in the guest; the monitor must install the
+     * return, not stop the machine. */
+    out=0xdead;
+    CHECK(exception_user_return(0xd69f03e0,hcr,0,0,&out) && out==0);
+    CHECK(exception_monitor_origin(UINT64_C(0xfffffe000b870048),0x604023c4));
+    out=0xdead;
+    CHECK(!exception_kernel_return(0xd69f03e0,hcr,0,0,&out) && out==0xdead);
+    for(unsigned flags=0;flags<256;flags++) {
+        uint64_t spsr=((uint64_t)(flags&15)<<28)|((uint64_t)(flags>>4)<<6);
+        out=0xdead;
+        CHECK(exception_user_return(0xd69f03e0,hcr,0,spsr,&out) && out==spsr);
+    }
     for(unsigned mode=0;mode<32;mode++) {
         CHECK(exception_monitor_origin(pc,mode)==(mode==4 || mode==5));
         CHECK(!exception_monitor_origin(user_pc,mode));
