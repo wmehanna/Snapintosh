@@ -26,6 +26,7 @@ from bootcontract import HostRuntime
 from xnuboot_terminal import require_xnuboot_terminal, XnubootQuarantined
 from devicemodel import MODEL_MAX, RESET_WORDS
 import monitor_work
+import qemu_panel
 import qemu_preload
 from monitor_work import resident_work
 Q1N1 = ROOT.parent / 'q1n1'
@@ -186,10 +187,13 @@ class Qemu:
         Path(self.sock).unlink(missing_ok=True)
 
 
-def connect(path=None, tries=60):
+def connect(path=None, tries=None):
     """A live socket is not a live proxy: QEMU creates the socket immediately,
     long before q1n1 has booted through firmware to the proxy loop. Retry until
-    a request actually comes back."""
+    a request actually comes back. SNAP_PROXY_TRIES raises the 60 s default for
+    firmware that spends a minute or more in PXE before startup.nsh runs."""
+    if tries is None:
+        tries = int(os.environ.get("SNAP_PROXY_TRIES", "60"))
     last = None
     for attempt in range(tries):
         try:
@@ -1327,7 +1331,7 @@ def run_xnuboot(proxy, info, code, guest_profile='j700ap-26A428',
                 firmware_dir=None, kernelcache=None, console_mode='auto',
                 relay_panel=False, ramdisk=None, root_hash=None, ramdisk_mode='md0', isc_image=None,
                 graphics_boot=False, auxkc=None, trust_additions=None, ans_disk=None, ans_writable=False,
-                code_size=None):
+                code_size=None, qemu=False):
     """Put a stock kernelcache in memory and enter it at EL1.
 
     The image, its 16K page tables and the handoff are all built and checked on
@@ -1353,6 +1357,16 @@ def run_xnuboot(proxy, info, code, guest_profile='j700ap-26A428',
         if xb.GUEST_PROFILE.sep_asc and xb.GUEST_PROFILE.sep_asc.pnon_recovery and (
                 not ramdisk or not root_hash or ramdisk_mode!='iokit'):
             raise ValueError('ordinary-recovery pnon requires the hash-bound IOKit BaseSystem root')
+        # SNAP_QEMU_PANEL=WxH: a panel-sized boot framebuffer in place of EDK2's
+        # 800x600 ramfb mode (probes/qemu_panel.py). Before the host contract,
+        # so every later range check sees the real panel.
+        panel = qemu_panel.requested(os.environ)
+        if panel and not os.environ.get('SNAP_NO_FB'):
+            if not qemu:
+                raise ValueError(f'{qemu_panel.ENV} needs --qemu: fw_cfg is a QEMU virt device')
+            size = qemu_panel.allocation(*panel)
+            info = qemu_panel.describe(info, qemu_panel.place(monitor_work.firmware_free(proxy, info), size),
+                                       *panel)
         host = HostRuntime.from_q1n1(info, with_framebuffer=
                                     not bool(os.environ.get('SNAP_NO_FB')))
         if console_mode == 'auto':
@@ -1455,7 +1469,8 @@ def run_xnuboot(proxy, info, code, guest_profile='j700ap-26A428',
             need += adreno.pool_reservation_bytes() + adreno.POOL_RESERVATION_ALIGN   # its 64 KiB alignment
         region = free_region(proxy, info, need, xb.REGION_ALIGN,
                              required_base=int(want, 0) if want else None,
-                             **({'exclude': [qcc2072wifi.RESERVATION]} if qcc_inputs else {}))
+                             exclude=([qcc2072wifi.RESERVATION] if qcc_inputs else [])
+                             + qemu_panel.excluded(info))
         if region is None:
             # Not a warning. Carrying on with the default placement runs the
             # image somewhere the target did not say was free, and whatever
@@ -1635,6 +1650,13 @@ def run_xnuboot(proxy, info, code, guest_profile='j700ap-26A428',
         print(f'  panel {info["fb_width"]}x{info["fb_height"]}x{depth * 8} '
               f'({"RGB" if fmt == 0 else "BGR"}) at {info["fb_base"]:#x} '
               f'handed to XNU')
+        if info.get('qemu_panel'):
+            try:
+                select = qemu_panel.program(proxy, info)
+            except (ValueError, q1n1.ProxyRemoteError) as error:
+                return verdict(EXIT_LOADER, f'QEMU panel refused: {error}')
+            print(f'  QEMU panel: {info["qemu_panel"][1] >> 20} MiB of firmware-free RAM, cleared; '
+                  f'ramfb (fw_cfg {select:#x}) shows it')
     else:
         print('  serial-only baseline (SNAP_NO_FB); panel withheld')
     if console_mode == 'panel':
@@ -3415,6 +3437,8 @@ def main():
                     ('guest_profile', 'firmware_dir', 'kernelcache',
                      'console_mode', 'relay_panel', 'ramdisk', 'root_hash', 'ramdisk_mode', 'isc_image',
                      'graphics_boot', 'auxkc', 'trust_additions', 'ans_disk', 'ans_writable')}
+    if args.probe == 'xnuboot':
+        boot_options['qemu'] = args.qemu
 
     blob = build(args.probe, ROOT / 'build')
     if args.qemu:
