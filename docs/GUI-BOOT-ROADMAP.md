@@ -235,7 +235,8 @@ update 06:00 EST Nov 6.
 The QEMU lab board cannot go further than this. Its Adreno profile adopts a
 synthetic record (`ADRENO_F_RECORD`): no command processor runs the ring, and
 the monitor writes each IB's completion markers itself
-(`compat/adreno-ib.c`). Command buffers complete without executing, so every
+(`compat/adreno-ib.c` on the `lab-snaplab` branch, commit a7909d8). Command
+buffers complete without executing, so every
 GPU-rendered surface stays zero and WindowServer's frames are black apart
 from the CPU-drawn cursor. The login window and desktop gates need the A16
 or a software GPU executor on the board.
