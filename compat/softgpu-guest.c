@@ -132,7 +132,7 @@ int sgpu_guest_pkt_create_memory(void *buf, uint32_t cap, uint32_t mem_id, uint3
     p->head = head;
     p->run_count = nruns;
     memcpy((uint8_t *)buf + sizeof *p, runs, (size_t)nruns * sizeof *runs);
-    return bytes;
+    return (int)bytes;
 }
 int sgpu_guest_pkt_destroy_memory(void *buf, uint32_t cap, uint32_t mem_id)
 {
