@@ -13,6 +13,7 @@ import contextlib
 import copy
 import functools
 import io
+import os
 import re
 import runpy
 import struct
@@ -369,9 +370,9 @@ class SoftGpuTree(unittest.TestCase):
         xb.configure_guest(FULL)
         xb.place(0x8c0000000, guest_span=8192 << 20)
         xb.ADRENO_RECORD = adreno.fixture_record()
-        kc = ROOT / 'build/auxkc-20260925/aux-hello.kc'
+        kc = Path(os.environ.get('SNAP_TEST_AUXKC', ROOT / 'build/auxkc-20260925/aux-hello.kc'))
         if not kc.exists():
-            self.skipTest('pinned aux-hello.kc not present')
+            self.skipTest('pinned aux-hello.kc not present (or set SNAP_TEST_AUXKC)')
         with contextlib.redirect_stdout(io.StringIO()):
             plain = xb.build(str(xb.DEFAULT_KERNELCACHE), auxkc=str(kc))['chunks'][xb.PARAMS_PA]
             xb.SOFTGPU = self.SPEC

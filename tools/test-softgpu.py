@@ -23,6 +23,7 @@ from source_text import read_source
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'probes'))
 sys.dont_write_bytecode = True
+sys.path.insert(0, str(ROOT / 'tools'))
 import adreno  # noqa: E402
 
 HEADER = ROOT / 'compat/softgpu.h'
@@ -177,6 +178,57 @@ class Parser(unittest.TestCase):
         self.assertEqual(adreno.softgpu_from_dtb(self.edit(interrupts=struct.pack('>3I', 0, 200, 4))).intid, 232)
         with self.assertRaises(ValueError):
             adreno.softgpu_from_dtb(self.edit(interrupts=struct.pack('>3I', 0, 2000, 4)))      # INTID past the SPI range
+
+
+class Prepass(unittest.TestCase):
+    """probes/run.py: the dumpdtb pre-pass runs the board's own QEMU command line and refuses without the device."""
+
+    @staticmethod
+    def qemu(script):
+        import os
+        import stat
+        import run
+        work = Path(tempfile.mkdtemp())
+        fake = work / 'qemu'
+        fake.write_text(script)
+        fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+        q = object.__new__(run.Qemu)
+        q.drive, q.sock = 'format=raw,file=fat:rw:/nonexistent', str(work / 'sock')
+        return run, q, fake, work
+
+    def test_command_line(self):
+        run, q, fake, work = self.qemu('#!/bin/sh\n')
+        with mock.patch.object(run, 'QEMU', str(fake)), mock.patch.dict('os.environ', {'SNAP_QEMU_ARGS': '-device snap-softgpu'}):
+            plain, dump = q.command(), q.command(',dumpdtb=/x.dtb')
+        self.assertEqual(plain[:3], [str(fake), '-machine', 'virt,virtualization=on,gic-version=3'])
+        self.assertEqual(dump[2], 'virt,virtualization=on,gic-version=3,dumpdtb=/x.dtb')
+        self.assertEqual(plain[3:], dump[3:])                          # every other argument is the board's own
+        self.assertEqual(plain[-2:], ['-device', 'snap-softgpu'])
+
+    def test_dumpdtb_and_parse(self):
+        fixture = ROOT / 'tools/fixtures/virt-softgpu.dtb'
+        run, q, fake, work = self.qemu(f'#!/bin/sh\nfor a in "$@"; do case "$a" in *dumpdtb=*) cp {fixture} "${{a##*dumpdtb=}}";; esac; done\n')
+        with mock.patch.object(run, 'QEMU', str(fake)):
+            self.assertEqual(run.softgpu_prepass(q), adreno.SoftGpuSpec(0x0C000000, 144))
+        self.assertEqual(list(Path('/tmp').glob('snapintosh-dumpdtb-*')), [])
+
+    def test_no_device_refuses(self):
+        fixture = ROOT / 'tools/fixtures/virt-softgpu.dtb'
+        run, q, fake, work = self.qemu(f'#!/bin/sh\nfor a in "$@"; do case "$a" in *dumpdtb=*) sed s/snapintosh,softgpu/snapintosh,nothing/ {fixture} > "${{a##*dumpdtb=}}";; esac; done\n')
+        with mock.patch.object(run, 'QEMU', str(fake)), self.assertRaisesRegex(ValueError, 'not one'):
+            run.softgpu_prepass(q)
+
+    def test_qemu_failure_refuses(self):
+        run, q, fake, work = self.qemu('#!/bin/sh\necho boom >&2\nexit 1\n')
+        with mock.patch.object(run, 'QEMU', str(fake)), self.assertRaisesRegex(ValueError, 'dumpdtb failed'):
+            run.softgpu_prepass(q)
+
+    def test_env_needs_qemu_and_one(self):
+        src = read_source(ROOT / 'probes/run.py')
+        self.assertIn("ap.error('SNAP_SOFTGPU must be 1')", src)
+        self.assertIn("if not args.qemu or args.probe != 'xnuboot':", src)
+        self.assertIn("return verdict(EXIT_LOADER, f'SNAP_SOFTGPU=1 refused: {error}')", src)
+        self.assertIn('xb.SOFTGPU = SOFTGPU_SPEC', src)
 
 
 class Loader(unittest.TestCase):
