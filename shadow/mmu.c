@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 /* See mmu.h. */
 #include "mmu.h"
-#include <string.h>
 
 /* Index bits per level. A table is one granule of 8-byte entries, so a 16K
  * granule indexes 11 bits per level and a 4K granule 9 -- which is why the 16K
@@ -61,7 +60,8 @@ int mmu_walk(const struct mmu_config *cfg, uint64_t va, mmu_read_fn read, void *
              struct mmu_leaf *out)
 {
     if (!cfg || !read || !out) return -1;
-    memset(out, 0, sizeof(*out));
+    /* No memset: the monitor is freestanding and has no <string.h>. */
+    for (unsigned n = 0; n < sizeof(*out); n++) ((uint8_t *)out)[n] = 0;
 
     if (cfg->granule_shift != 12 && cfg->granule_shift != 14 && cfg->granule_shift != 16)
         return -1;
