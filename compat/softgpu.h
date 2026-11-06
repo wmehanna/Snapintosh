@@ -24,6 +24,8 @@
 #define SOFTGPU_PARAMS_WORDS    5
 #define SOFTGPU_STAGE2_MAX      1u
 #define SOFTGPU_PAGE            0x1000ULL
+#define SOFTGPU_WINDOW_LO       0x0c000000ULL   /* virt platform-bus window: the only place the device can sit */
+#define SOFTGPU_WINDOW_HI       0x0e000000ULL
 #define SOFTGPU_INTID_FIRST     32u     /* the first SPI */
 #define SOFTGPU_INTID_LAST      1019u
 
@@ -38,8 +40,8 @@ _Static_assert(sizeof(struct softgpu_params) == 8 * SOFTGPU_PARAMS_WORDS, "probe
 
 static inline int softgpu_valid(const struct softgpu_params *p)
 {
-    return p->magic == SOFTGPU_MAGIC && p->flags == SOFTGPU_F_PAGE0 && p->page0_pa && !(p->page0_pa & (SOFTGPU_PAGE - 1)) &&
-           p->page0_pa < (1ULL << 48) && p->page1_pa == p->page0_pa + SOFTGPU_PAGE &&
+    return p->magic == SOFTGPU_MAGIC && p->flags == SOFTGPU_F_PAGE0 && !(p->page0_pa & (SOFTGPU_PAGE - 1)) &&
+           p->page0_pa >= SOFTGPU_WINDOW_LO && p->page0_pa + SOFTGPU_PAGE <= SOFTGPU_WINDOW_HI && p->page1_pa == p->page0_pa + SOFTGPU_PAGE &&
            p->intid >= SOFTGPU_INTID_FIRST && p->intid <= SOFTGPU_INTID_LAST;
 }
 

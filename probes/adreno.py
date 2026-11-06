@@ -59,6 +59,7 @@ SOFTGPU_MAGIC = int.from_bytes(b'SNAPSGP1', 'little')
 SOFTGPU_F_PAGE0 = 1
 SOFTGPU_PARAMS_WORDS = 5
 SOFTGPU_PAGE = 0x1000
+SOFTGPU_WINDOW = (0x0C000000, 0x0E000000)   # compat/softgpu.h SOFTGPU_WINDOW_LO/HI
 SOFTGPU_INTID_FIRST, SOFTGPU_INTID_LAST = 32, 1019
 SOFTGPU_CHILD_BASE = 0x7_0000_0000      # arm-io child address of page 0 = this + its physical address (0x7_0C00_0000)
 SOFTGPU_COMPATIBLE = 'snapintosh,softgpu'
@@ -152,7 +153,7 @@ class SoftGpuSpec:
     intid: int
 
     def __post_init__(self):
-        if (not self.page0 or self.page0 & (SOFTGPU_PAGE - 1) or self.page0 >= SOFTGPU_CHILD_BASE or
+        if (self.page0 & (SOFTGPU_PAGE - 1) or not SOFTGPU_WINDOW[0] <= self.page0 <= SOFTGPU_WINDOW[1] - SOFTGPU_PAGE or
                 not SOFTGPU_INTID_FIRST <= self.intid <= SOFTGPU_INTID_LAST):
             raise ValueError(f'SoftGPU page 0 {self.page0:#x} / INTID {self.intid} are not a device page and an SPI')
 
@@ -179,8 +180,8 @@ def softgpu_rows(words):
     if len(words) != SOFTGPU_PARAMS_WORDS:
         return None
     magic, flags, page0, page1, intid = words
-    if (magic != SOFTGPU_MAGIC or flags != SOFTGPU_F_PAGE0 or not page0 or page0 & (SOFTGPU_PAGE - 1) or
-            page0 >= 1 << 48 or page1 != page0 + SOFTGPU_PAGE or not SOFTGPU_INTID_FIRST <= intid <= SOFTGPU_INTID_LAST):
+    if (magic != SOFTGPU_MAGIC or flags != SOFTGPU_F_PAGE0 or page0 & (SOFTGPU_PAGE - 1) or
+            not SOFTGPU_WINDOW[0] <= page0 <= SOFTGPU_WINDOW[1] - SOFTGPU_PAGE or page1 != page0 + SOFTGPU_PAGE or not SOFTGPU_INTID_FIRST <= intid <= SOFTGPU_INTID_LAST):
         return None
     return [(page0, page0 + SOFTGPU_PAGE)]
 
@@ -261,6 +262,14 @@ def _combine(blob, count):
 
 
 def softgpu_from_dtb(blob):
+    """the parse below, with every parse failure as ValueError."""
+    try:
+        return _softgpu_from_dtb(blob)
+    except (TypeError, KeyError, IndexError, struct.error, ZeroDivisionError, RecursionError, UnicodeDecodeError) as error:
+        raise ValueError(f'malformed device tree: {error!r}') from error
+
+
+def _softgpu_from_dtb(blob):
     """The SoftGPU device in a QEMU `dumpdtb` tree: page 0 (reg 0, translated through every ancestor's `ranges`),
     page 1 must follow it, and the SPI of `interrupts`. Exactly one node with compatible `snapintosh,softgpu`;
     a missing node, a second one, a missing interrupt or a page 1 anywhere else raises ValueError."""
@@ -356,6 +365,10 @@ def prepare_tree(dt, spec, owned=(), softgpu=None):
         add.append((DART_REG, DART_REG, DART_SPAN))
     if softgpu is not None:
         add.append((softgpu.child, softgpu.page0, SOFTGPU_PAGE))
+    for i, (c1, p1, s1) in enumerate(add):
+        for c2, p2, s2 in add[i + 1:]:
+            if c1 < c2 + s2 and c2 < c1 + s1 or p1 < p2 + s2 and p2 < p1 + s1:
+                raise ValueError(f'new arm-io ranges {c1:#x} and {c2:#x} overlap')
     for child, parent, span in add:
         for c, p, s in ranges:
             if child < c + s and c < child + span:

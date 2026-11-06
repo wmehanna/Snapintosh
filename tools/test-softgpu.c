@@ -42,6 +42,10 @@ int main(void)
     p = good; p.page0_pa += 0x800; p.page1_pa += 0x800; CHECK(refused(p));     /* unaligned */
     p = good; p.page1_pa = good.page0_pa + 0x2000; CHECK(refused(p));         /* page 1 elsewhere */
     p = good; p.page1_pa = good.page0_pa; CHECK(refused(p));
+    p = good; p.page0_pa = 0x0bfff000ULL; p.page1_pa = 0x0c000000ULL; CHECK(refused(p));   /* below the bus window */
+    p = good; p.page0_pa = 0x0e000000ULL; p.page1_pa = 0x0e001000ULL; CHECK(refused(p));   /* past the window */
+    p = good; p.page0_pa = 0x0dfff000ULL; p.page1_pa = 0x0e000000ULL; CHECK(!refused(p));  /* last page in */
+    p = good; p.page0_pa = 0x80000000ULL; p.page1_pa = 0x80001000ULL; CHECK(refused(p));   /* guest RAM side */
     p = good; p.page0_pa = 1ULL << 48; p.page1_pa = p.page0_pa + 0x1000; CHECK(refused(p));
     p = good; p.intid = 31; CHECK(refused(p));                                  /* a PPI */
     p = good; p.intid = 1020; CHECK(refused(p));                                /* special INTIDs */

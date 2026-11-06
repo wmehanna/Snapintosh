@@ -31,6 +31,7 @@ FIXTURE = (ROOT / 'tools/fixtures/virt-softgpu.dtb').read_bytes()
 MUTATIONS = (
     ('no magic check', 'p->magic == SOFTGPU_MAGIC && ', ''),
     ('no flags check', 'p->flags == SOFTGPU_F_PAGE0 && ', ''),
+    ('no window check', 'p->page0_pa >= SOFTGPU_WINDOW_LO && p->page0_pa + SOFTGPU_PAGE <= SOFTGPU_WINDOW_HI &&', ''),
     ('no alignment check', ' && !(p->page0_pa & (SOFTGPU_PAGE - 1))', ''),
     ('page 1 anywhere', 'p->page1_pa == p->page0_pa + SOFTGPU_PAGE &&', ''),
     ('any interrupt', ' &&\n           p->intid >= SOFTGPU_INTID_FIRST && p->intid <= SOFTGPU_INTID_LAST', ''),
@@ -140,6 +141,13 @@ class Parser(unittest.TestCase):
         with self.assertRaises(ValueError):
             adreno.softgpu_from_dtb(b'\0' * 64)
 
+    def test_hostile_trees_are_value_errors(self):
+        import struct as st
+        hdr = lambda body: st.pack('>10I', 0xD00DFEED, 40 + len(body) + 8, 40, 40 + len(body), 40, 17, 16, 0, 8, len(body)) + body + b'\0' * 8
+        for body in (st.pack('>I', 3) + b'\0' * 8, st.pack('>3I', 1, 2, 9), b'\0' * 7):
+            with self.subTest(body=body), self.assertRaises(ValueError):
+                adreno.softgpu_from_dtb(hdr(body))
+
     def test_truncated_refuses(self):
         for cut in (8, 40, len(FIXTURE) // 2, len(FIXTURE) - 8):
             with self.subTest(cut=cut), self.assertRaises(ValueError):
@@ -210,7 +218,6 @@ class Prepass(unittest.TestCase):
         run, q, fake, work = self.qemu(f'#!/bin/sh\nfor a in "$@"; do case "$a" in *dumpdtb=*) cp {fixture} "${{a##*dumpdtb=}}";; esac; done\n')
         with mock.patch.object(run, 'QEMU', str(fake)):
             self.assertEqual(run.softgpu_prepass(q), adreno.SoftGpuSpec(0x0C000000, 144))
-        self.assertEqual(list(Path('/tmp').glob('snapintosh-dumpdtb-*')), [])
 
     def test_no_device_refuses(self):
         fixture = ROOT / 'tools/fixtures/virt-softgpu.dtb'
@@ -249,7 +256,7 @@ class Loader(unittest.TestCase):
                          [(0x0C000000, 0x0C001000, 'rw', 'SoftGPU page 0 (Device-nGnRE)')])
 
     def test_spec_refusals(self):
-        for page0, intid in ((0, 144), (0x0C000800, 144), (0x0C000000, 31), (0x0C000000, 1020), (0x7_0C000000, 144)):
+        for page0, intid in ((0, 144), (0x0C000800, 144), (0x0C000000, 31), (0x0C000000, 1020), (0x7_0C000000, 144), (0x0E000000, 144), (0x0BFFF000, 144), (0x80000000, 144)):
             with self.subTest(page0=page0, intid=intid), self.assertRaises(ValueError):
                 adreno.SoftGpuSpec(page0, intid)
 

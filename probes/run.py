@@ -15,6 +15,7 @@ import runpy
 import shlex
 import shutil
 import struct
+import tempfile
 import subprocess
 import sys
 import time
@@ -182,16 +183,18 @@ class Qemu:
     def dumpdtb(self):
         """The machine's device tree for exactly this command line, as bytes: QEMU writes it and exits before any guest
         code (or the proxy socket) exists."""
-        out = Path(f'/tmp/snapintosh-dumpdtb-{os.getpid()}.dtb')
-        out.unlink(missing_ok=True)
+        work = Path(tempfile.mkdtemp(prefix='snapintosh-dumpdtb-'))
+        out = work / 'virt.dtb'
         try:
             done = subprocess.run(self.command(f',dumpdtb={out}'), stdout=subprocess.DEVNULL,
                                   stderr=subprocess.PIPE, text=True, timeout=120)
             if done.returncode or not out.exists():
                 raise ValueError(f'QEMU dumpdtb failed ({done.returncode}): {done.stderr.strip()[-300:]}')
             return out.read_bytes()
+        except subprocess.TimeoutExpired as error:
+            raise ValueError(f'QEMU dumpdtb timed out: {error}') from error
         finally:
-            out.unlink(missing_ok=True)
+            shutil.rmtree(work, ignore_errors=True)
 
     def __enter__(self):
         Path(self.sock).unlink(missing_ok=True)
