@@ -219,6 +219,18 @@ feature. What had to be solved:
 - Open: frame pacing under load, GPU address-space pressure, tearing, and the
   panel's 120 Hz mode after a steady 60 Hz.
 
+### WindowServer presentation, done 2026-11-06
+
+This was Phase 5 gate 4, the part Opus 5.5 declined to finish. It is now
+working on the lab board: WindowServer enqueues swaps that AdrenoDisplay
+presents, and the panel scanout pixels were read back and matched the
+submitted surface. Three plugin answers were needed on top of the digital-out
+mode fix: claim every Apple GPU family so QuartzCore maps the lossless `&b38`
+surface to format 550 and Metal's pipeline validation accepts it, answer the
+pixel-format support queries, and hand the air2ir3 compiler a BGRA8 view
+because it refuses format class 3 as a render target. Evidence and exact
+hashes are in `HANDOFF-P5-20261104.md`, update 06:00 EST Nov 6.
+
 ## What counts as passing a gate
 
 A static path, an offline test, driver registration, the text console or an
