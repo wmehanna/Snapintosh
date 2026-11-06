@@ -659,6 +659,11 @@ CASES = [
     ('surface-lossless-rgbahalf-352', ['--kind', 'surface', '--format', '115', '--fourcc', '&RhA', '--bpe', '2048', '--element',
                                        '16', '16', '--row', '45056', '--size', '352', '352', '--surface-size', '352', '352', '--draw'],
      ('pass', 115, 352, 352, 2816, True), False),
+    # The panel's '&b38' (lossless 30RGBLE biplanar plane 0, 16x16 elements of 1024 bytes) with Metal's private
+    # format 550, used as linear 4-byte rows: WindowServer's 2880x1800 colour attachment
+    ('surface-lossless-b38', ['--kind', 'surface', '--format', '550', '--fourcc', '&b38', '--bpe', '1024', '--element',
+                              '16', '16', '--row', '4096', '--size', '64', '32', '--surface-size', '64', '32', '--draw'],
+     ('pass', 550, 64, 32, 256, True), False),
     # Only the exact pairs: '&RhA' with an 8-byte format other than RGBA16Float, or a 4-byte one, stays refused
     ('surface-lossless-rgbahalf-as-bgra8', ['--kind', 'surface', '--format', '80', '--fourcc', '&RhA', '--bpe', '2048', '--element',
                                             '16', '16', '--row', '8192', '--size', '64', '32', '--surface-size', '64', '32'],

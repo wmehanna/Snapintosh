@@ -87,10 +87,13 @@ class Qemu:
         Path(self.sock).unlink(missing_ok=True)
 
 
-def connect(path=None, tries=60):
+def connect(path=None, tries=None):
     """A live socket is not a live proxy: QEMU creates the socket immediately,
     long before q1n1 has booted through firmware to the proxy loop. Retry until
-    a request actually comes back."""
+    a request actually comes back. SNAP_PROXY_TRIES raises the 60 s default for
+    firmware that spends a minute or more in PXE before startup.nsh runs."""
+    if tries is None:
+        tries = int(os.environ.get('SNAP_PROXY_TRIES', '60'))
     last = None
     for attempt in range(tries):
         try:
@@ -3349,7 +3352,7 @@ def run(proxy, blob, probe, where, boot_options=None):
                   f'reports TGran16 {tg(real):#x}, and every other field is unchanged.')
         else:
             print('\nTID3 works, but this CPU already has 16K so the forgery is not '
-                  'observable here — run it on the A16 for the real result.')
+                  'observable here, run it on the A16 for the real result.')
     elif probe == 'tgran16':
         proxy.call(code, out, table)
         hcr, a, b, c, d, mmfr0, expect = struct.unpack('<7Q', proxy.readmem(out, 56))

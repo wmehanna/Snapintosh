@@ -743,6 +743,7 @@ public:
     uint64_t getBytesPerRow() const;
     uint64_t getBytesPerElement() const;
     uint64_t getBaseOffset() const;
+    uint64_t getPlaneOffset(unsigned int plane) const;   // __ZNK9IOSurface14getPlaneOffsetEj (IOSurface 0xb62a)
     uint32_t getPixelFormat() const;
     uint32_t getSurfaceID() const;
     uint32_t getCacheMode() const;     // __ZNK9IOSurface12getCacheModeEv (IOSurface 0x15894): ldr w0,[this,#0x9c]; ret
