@@ -49,6 +49,14 @@ struct stage2_range {
                                * its upper bits (S2_XN or 0) */
 };
 
+/* End of the trust cache's stage-2 span: the 16 KiB header page group plus the payload rounded up to 16 KiB. The one place
+ * the span is computed: vcpu_stage2_prepare seals [pa, end) read-only with it and the SoftGPU windows (compat/softgpu.c
+ * softgpu_cuts) cut the same range, so the device can never write what the guest cannot. */
+static inline uint64_t stage2_trust_end(uint64_t pa, uint64_t size)
+{
+    return pa + 0x4000 + ((size + 0x3fff) & ~(uint64_t)0x3fff);
+}
+
 /* A range that is empty, unaligned, past the IPA width `s->txsz` describes,
  * or overlapping another; also an empty list. Nothing has been written. */
 #define STAGE2_BAD_RANGES (-2)

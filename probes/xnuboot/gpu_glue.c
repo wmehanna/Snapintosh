@@ -231,70 +231,49 @@ static unsigned softgpu_windows_rows(const struct context *c,struct stage2_range
 {
     return stage2_base_rows(c,rows);
 }
-/* What the monitor withholds from, or narrows for, the device on top of those rows. Everything here is also a stage-2 fact:
- * the monitor's own table arena and the vCPU runtime pages (the work area, read-only to the guest, never DMA), the trust
- * cache and the write-watch page (read-only), the handoff watch pages (guarded, so unreachable), and the kernel const
- * region once LOCKDOWN seals it (const_ro). `const_ro` is passed explicitly so the downgrade is derived before stage 2. */
-static unsigned softgpu_windows_cuts(const struct context *c,int const_ro,struct softgpu_cut *cuts)
+/* What the monitor withholds from, or narrows for, the device on top of those rows, as plain values: the monitor's own table
+ * arena and the vCPU runtime pages, the trust cache, the write-watch page, the handoff watch pages and the kernel const
+ * region. compat/softgpu.c (softgpu_cuts) turns them into cuts and tools/test-softgpu-windows.c runs that on the host. */
+static void softgpu_facts_of(const struct context *c,struct softgpu_facts *f)
 {
     const struct params *p=c->params;
-    unsigned n=0;
-    cuts[n++]=(struct softgpu_cut){c->work_base,c->work_end,0};
-    if(p->trust_cache.pa)
-        cuts[n++]=(struct softgpu_cut){p->trust_cache.pa,
-            p->trust_cache.pa+0x4000+((p->trust_cache.size+0x3fff)&~0x3fffUL),SOFTGPU_PERM_READ};
-    if(p->write_watch_pa)
-        cuts[n++]=(struct softgpu_cut){p->write_watch_pa,p->write_watch_pa+0x1000,SOFTGPU_PERM_READ};
-    if(p->watch_count)
-        cuts[n++]=(struct softgpu_cut){p->watch_pa,p->watch_pa+p->watch_count*0x1000,0};
-    if(const_ro)
-        cuts[n++]=(struct softgpu_cut){p->const_begin,p->const_end,SOFTGPU_PERM_READ};
-    return n;
-}
-/* Derive the windows for the current stage-2 facts and make the device hold exactly them. 0, or a SOFTGPU_E_* (after which
- * the device has no windows). The caller changes stage 2 only after this returns 0. */
-static int softgpu_windows_apply(struct context *c,int const_ro)
-{
-    struct stage2_range rows[SOFTGPU_ROWS_MAX];
-    struct softgpu_cut cuts[SOFTGPU_CUTS_MAX];
-    struct sgpu_window win[SOFTGPU_WINDOWS_MAX];
-    unsigned nwin=0;
-    int e=softgpu_derive(rows,softgpu_windows_rows(c,rows),cuts,softgpu_windows_cuts(c,const_ro,cuts),win,&nwin);
-    if(!e) e=softgpu_mon_program(&softgpu_mon_hw,&SGS(c).mon,win,nwin);
-    SGS(c).last=e;
-    if(!e) SGS(c).windows=nwin;
-    return e;
+    *f=(struct softgpu_facts){
+        .work_base=c->work_base,.work_end=c->work_end,
+        .trust_pa=p->trust_cache.pa,.trust_size=p->trust_cache.size,
+        .write_watch_pa=p->write_watch_pa,
+        .watch_pa=p->watch_pa,.watch_count=p->watch_count,
+        .const_begin=p->const_begin,.const_end=p->const_end};
 }
 /* Before the guest runs: the windows from the freshly built stage 2, then LOCK (the device refuses RING_ENABLE until it),
  * then the interrupt's route (the CPU that runs vCPU 0 takes it). -46: windows or lock refused; -47: the GIC route. */
 static int64_t softgpu_prepare(struct context *c,uint64_t affinity)
 {
     const struct softgpu_params *s=softgpu_block(c->params);
-    SGS(c).const_ro=0;
-    if(softgpu_mon_open(&softgpu_mon_hw,&SGS(c).mon,s->page1_pa)) return -46;
-    if(softgpu_windows_apply(c,0) || softgpu_mon_lock(&softgpu_mon_hw,&SGS(c).mon)) return -46;
-    SGS(c).stage=1;
+    struct stage2_range rows[SOFTGPU_ROWS_MAX];
+    struct softgpu_facts f;
+    unsigned n=softgpu_windows_rows(c,rows);
+    softgpu_facts_of(c,&f);
+    if(softgpu_prepare_windows(&softgpu_mon_hw,&SGS(c),s->page1_pa,rows,n,&f)) return -46;
     if(softgpu_gic_route(&softgpu_gic_hw,c->params->gpu.gicd,(uint32_t)s->intid,affinity,ADRENO_IRQ_PRIORITY)) return -47;
     return 0;
 }
 /* SPTM_FN_LOCKDOWN, before const_region_seal: narrow the device first, then stage 2 (spec 1.3, "downgrade"). A device that
- * does not confirm has already been failed closed; the seal is refused. */
+ * does not confirm has already been failed closed; the seal is refused. A boot whose GPU block is off never opened page 1
+ * (gpu_prepare returns first): there is nothing to narrow and no register is touched. */
 static int softgpu_lockdown(struct context *c)
 {
-    if(SGS(c).const_ro) return 0;                 /* already narrowed: LOCKDOWN twice changes nothing more */
-    int e=softgpu_windows_apply(c,1);
-    if(e) return e;
-    SGS(c).const_ro=1;
-    SGS(c).stage=2;
-    SGS(c).downgrades++;
-    return 0;
+    struct stage2_range rows[SOFTGPU_ROWS_MAX];
+    struct softgpu_facts f;
+    unsigned n=softgpu_windows_rows(c,rows);
+    softgpu_facts_of(c,&f);
+    return softgpu_lockdown_step(&softgpu_mon_hw,&SGS(c),rows,n,&f);
 }
-/* The guest's memory is handed back: the device keeps no window into it. */
+/* The guest's memory is handed back: the device keeps no window into it, and says so. A device that never confirmed is
+ * recorded (EV_MAP_FAILED, "SGPC"); the guest's memory changes owner either way. */
 static void softgpu_close(struct context *c)
 {
-    if(SGS(c).stage && !SGS(c).mon.failed)
-        (void)softgpu_mon_program(&softgpu_mon_hw,&SGS(c).mon,0,0);
-    SGS(c).stage=0;
+    int e=softgpu_close_step(&softgpu_mon_hw,&SGS(c));
+    if(e) record(c,EV_MAP_FAILED,0,0x53475043,(uint64_t)(int64_t)e,SGS(c).mon.unconfirmed);
 }
 /* The INTID the forwarded interrupt arrives as (async.c compares it with ICC_HPPIR1). */
 #define GPU_FWD_INTID(c) ((uint64_t)softgpu_block((c)->params)->intid)

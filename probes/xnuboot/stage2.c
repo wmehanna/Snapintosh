@@ -265,7 +265,7 @@ static int vcpu_stage2_prepare(struct context *c, struct vcpu *v)
        !stage2_split(&s2,p->const_begin) || !stage2_split(&s2,p->const_end-4096))return -20;
     if(p->trust_cache.pa) {
         uint64_t begin=p->trust_cache.pa;
-        uint64_t end=begin+0x4000+((p->trust_cache.size+0x3fff)&~0x3fffUL);
+        uint64_t end=stage2_trust_end(begin,p->trust_cache.size);
         if(!stage2_split(&s2,begin) || !stage2_split(&s2,end-4096) ||
            stage2_readonly(&s2,begin,end,0))return -21;
     }

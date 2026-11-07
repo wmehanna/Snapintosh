@@ -98,17 +98,39 @@ int softgpu_mon_open(const struct softgpu_mon_ops *ops, struct softgpu_mon *m, u
 {
     *m = (struct softgpu_mon){.page1 = page1_pa};
     if (ops->rd(ops->ctx, page1_pa) != SOFTGPU_MON_MAGIC) return SOFTGPU_E_DEVICE;
+    /* A fresh device only: a table the monitor writes must move the generation the device holds forward, and a locked
+     * device (monitorless=on, or a run nothing reset) already has windows this monitor did not derive. */
+    if (ops->rd(ops->ctx, page1_pa + SOFTGPU_MON_LOCK) || ops->rd(ops->ctx, page1_pa + SOFTGPU_MON_GEN) ||
+        ops->rd(ops->ctx, page1_pa + SOFTGPU_MON_GEN_APPLIED)) return SOFTGPU_E_DEVICE;
     return SOFTGPU_OK;
 }
 
-/* Best effort, after a failure: no windows at all, applied as a new generation. */
+/* No windows at all, applied as a new generation, and proved: the generation is applied and the count reads back zero.
+ * Without that proof the device may still hold windows (m->unconfirmed). */
+static int zero_table(const struct softgpu_mon_ops *ops, struct softgpu_mon *m)
+{
+    const uint64_t p1 = m->page1;
+    ops->wr(ops->ctx, p1 + SOFTGPU_MON_WINDOW_COUNT, 0);
+    m->gen++;
+    ops->wr(ops->ctx, p1 + SOFTGPU_MON_GEN, m->gen);
+    m->nwin = 0;
+    unsigned polls = 0;
+    while (ops->rd(ops->ctx, p1 + SOFTGPU_MON_GEN_APPLIED) != m->gen)
+        if (++polls >= SOFTGPU_APPLIED_POLLS) { m->unconfirmed++; return SOFTGPU_E_APPLIED; }
+    if (ops->rd(ops->ctx, p1 + SOFTGPU_MON_WINDOW_COUNT) != 0) { m->unconfirmed++; return SOFTGPU_E_DEVICE; }
+    return SOFTGPU_OK;
+}
+
+/* After a failure: the device gets no windows, and a failed monitor accepts nothing more. */
 static void fail_closed(const struct softgpu_mon_ops *ops, struct softgpu_mon *m)
 {
-    ops->wr(ops->ctx, m->page1 + SOFTGPU_MON_WINDOW_COUNT, 0);
-    m->gen++;
-    ops->wr(ops->ctx, m->page1 + SOFTGPU_MON_GEN, m->gen);
-    m->nwin = 0;
+    (void)zero_table(ops, m);
     m->failed = 1;
+}
+
+int softgpu_mon_close(const struct softgpu_mon_ops *ops, struct softgpu_mon *m)
+{
+    return zero_table(ops, m);
 }
 
 int softgpu_mon_program(const struct softgpu_mon_ops *ops, struct softgpu_mon *m, const struct sgpu_window *w,
@@ -182,4 +204,70 @@ int softgpu_gic_route(const struct softgpu_gic_ops *ops, uint64_t gicd, uint32_t
     /* A Secure interrupt's priority byte is RAZ/WI to Non-secure software (compat/adreno.c adreno_gic_route). */
     if (!((ops->rd(ops->ctx, pri) >> shift) & 0xffu)) return SOFTGPU_E_ARG;
     return SOFTGPU_OK;
+}
+
+/* ---- the monitor's steps over the stage-2 facts (pure: gpu_glue.c only fills in the facts) ---- */
+
+unsigned softgpu_cuts(const struct softgpu_facts *f, int const_ro, struct softgpu_cut *cuts)
+{
+    unsigned n = 0;
+    cuts[n++] = (struct softgpu_cut){f->work_base, f->work_end, 0};
+    if (f->trust_pa)
+        cuts[n++] = (struct softgpu_cut){f->trust_pa, stage2_trust_end(f->trust_pa, f->trust_size), SOFTGPU_PERM_READ};
+    if (f->write_watch_pa)
+        cuts[n++] = (struct softgpu_cut){f->write_watch_pa, f->write_watch_pa + SOFTGPU_PAGE, SOFTGPU_PERM_READ};
+    if (f->watch_count)
+        cuts[n++] = (struct softgpu_cut){f->watch_pa, f->watch_pa + f->watch_count * SOFTGPU_PAGE, 0};
+    if (const_ro)
+        cuts[n++] = (struct softgpu_cut){f->const_begin, f->const_end, SOFTGPU_PERM_READ};
+    return n;
+}
+
+int softgpu_apply(const struct softgpu_mon_ops *ops, struct softgpu_state *st, const struct stage2_range *rows,
+                  unsigned nrows, const struct softgpu_facts *f, int const_ro)
+{
+    struct softgpu_cut cuts[SOFTGPU_CUTS_MAX];
+    struct sgpu_window win[SOFTGPU_WINDOWS_MAX];
+    unsigned nwin = 0;
+    const unsigned ncuts = softgpu_cuts(f, const_ro, cuts);
+    int e = softgpu_derive(rows, nrows, cuts, ncuts, win, &nwin);
+    if (!e) e = softgpu_mon_program(ops, &st->mon, win, nwin);
+    st->last = e;
+    if (!e) st->windows = nwin;
+    return e;
+}
+
+int softgpu_prepare_windows(const struct softgpu_mon_ops *ops, struct softgpu_state *st, uint64_t page1_pa,
+                            const struct stage2_range *rows, unsigned nrows, const struct softgpu_facts *f)
+{
+    st->const_ro = 0;
+    int e = softgpu_mon_open(ops, &st->mon, page1_pa);
+    if (e) return e;
+    e = softgpu_apply(ops, st, rows, nrows, f, 0);
+    if (e) return e;
+    e = softgpu_mon_lock(ops, &st->mon);
+    if (e) return e;
+    st->stage = 1;
+    return SOFTGPU_OK;
+}
+
+int softgpu_lockdown_step(const struct softgpu_mon_ops *ops, struct softgpu_state *st, const struct stage2_range *rows,
+                          unsigned nrows, const struct softgpu_facts *f)
+{
+    if (!st->stage) return SOFTGPU_OK;            /* never prepared: page 1 was not opened, there is no table to narrow */
+    if (st->const_ro) return SOFTGPU_OK;          /* already narrowed: LOCKDOWN twice changes nothing more */
+    int e = softgpu_apply(ops, st, rows, nrows, f, 1);
+    if (e) return e;
+    st->const_ro = 1;
+    st->stage = 2;
+    st->downgrades++;
+    return SOFTGPU_OK;
+}
+
+int softgpu_close_step(const struct softgpu_mon_ops *ops, struct softgpu_state *st)
+{
+    int e = SOFTGPU_OK;
+    if (st->stage) e = softgpu_mon_close(ops, &st->mon);
+    st->stage = 0;
+    return e;
 }

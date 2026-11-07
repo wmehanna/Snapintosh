@@ -82,7 +82,9 @@ int64_t xnuboot_prepare(void)
      * read, so that read is a word and not a fault. */
     if (p->gpu.flags && el2_map_gpu_aperture()) return -39;
 #if SNAP_SOFTGPU
-    /* Page 1 of the SoftGPU device, EL2 only (the stage-2 allow-list already refused the boot, -44, without a valid block). */
+    /* Page 1 of the SoftGPU device, EL2 only. The block is checked first, with the same rule and the same refusal (-44) as
+     * the stage-2 allow-list, so an unchecked address never gets an EL2 Device map. */
+    if (!softgpu_valid(softgpu_block(p))) return -44;
     if (el2_map_softgpu(softgpu_block(p)->page1_pa)) return -45;
 #endif
 #if SNAP_EL0_MEMO

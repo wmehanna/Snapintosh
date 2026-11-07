@@ -349,6 +349,181 @@ __attribute__((unused)) static void test_random(void)
     }
 }
 
+/* ---- the monitor's steps over the facts: boot table, LOCKDOWN downgrade, close, refusal of a used device ---- */
+#define WWATCH   0x8f0800000ULL
+#define P1       0x0c001000ULL
+
+static struct softgpu_facts board_facts(void)
+{
+    return (struct softgpu_facts){
+        .work_base = WORK_LO, .work_end = WORK_HI,
+        .trust_pa = TRUST_LO, .trust_size = TRUST_HI - TRUST_LO - 0x4000,       /* stage2_trust_end() == TRUST_HI */
+        .write_watch_pa = WWATCH,
+        .watch_pa = WATCH, .watch_count = 2,
+        .const_begin = CONST_LO, .const_end = CONST_HI};
+}
+
+/* What the device holds, decoded from the model's page 1 registers (count, then the table words): the behaviour the guest's
+ * device would have, independent of how the monitor arrived at it. */
+static uint32_t dev_perm(const struct model *m, uint64_t pa)
+{
+    const uint32_t n = m->reg[SOFTGPU_MON_WINDOW_COUNT / 4];
+    for (uint32_t i = 0; i < n; i++) {
+        const uint32_t *w = &m->reg[(SOFTGPU_MON_WINDOW0 + 32 * i) / 4];
+        const uint64_t base = w[0] | (uint64_t)w[1] << 32, size = w[2] | (uint64_t)w[3] << 32;
+        if (pa >= base && pa - base < size) return w[6];
+    }
+    return 0;
+}
+
+static unsigned span_all(const struct model *m, uint64_t lo, uint64_t hi, uint32_t want)
+{
+    unsigned bad = 0;
+    for (uint64_t pa = lo; pa < hi; pa += 0x1000)
+        if (dev_perm(m, pa) != want) bad++;
+    return bad;
+}
+
+static void model_fresh(struct model *m)
+{
+    memset(m, 0, sizeof *m);
+    m->page1 = P1;
+}
+
+__attribute__((unused)) static void test_lockdown(void)
+{
+    static struct model m;
+    struct softgpu_state st;
+    const struct softgpu_mon_ops ops = {&m, m_rd, m_wr};
+    struct stage2_range rows[SOFTGPU_ROWS_MAX];
+    const struct softgpu_facts f = board_facts();
+    const unsigned nrows = board_rows(rows);
+    model_fresh(&m);
+    memset(&st, 0, sizeof st);
+    CHECK(softgpu_prepare_windows(&ops, &st, P1, rows, nrows, &f) == SOFTGPU_OK);
+    CHECK(st.stage == 1 && st.mon.locked && !st.mon.failed && m.reg[SOFTGPU_MON_LOCK / 4] == 1);
+    CHECK(m.applied == 1 && st.mon.gen == 1);
+    /* the boot table: the const region is still writable to the device, the trust cache and the write-watch page are not */
+    CHECK(span_all(&m, CONST_LO, CONST_HI, 3) == 0);
+    CHECK(span_all(&m, TRUST_LO, TRUST_HI, 1) == 0 && dev_perm(&m, TRUST_HI) == 3 && dev_perm(&m, TRUST_LO - 0x1000) == 3);
+    CHECK(dev_perm(&m, WWATCH) == 1 && dev_perm(&m, WWATCH - 0x1000) == 3 && dev_perm(&m, WWATCH + 0x1000) == 3);
+    CHECK(span_all(&m, WATCH, WATCH + 0x2000, 0) == 0 && dev_perm(&m, WATCH + 0x2000) == 3);
+    CHECK(span_all(&m, WORK_LO, WORK_HI, 0) == 0);
+    CHECK(dev_perm(&m, 0x0c000000ULL) == 0 && dev_perm(&m, P1) == 0);                    /* the device's own pages */
+
+    /* LOCKDOWN: the device is narrowed first. After it the whole const region is READ only, the cut ends exactly at its
+     * edges, and nothing else moved. */
+    const unsigned writes_before = m.writes;
+    CHECK(softgpu_lockdown_step(&ops, &st, rows, nrows, &f) == SOFTGPU_OK);
+    CHECK(st.stage == 2 && st.const_ro && st.downgrades == 1 && st.mon.gen == 2 && m.applied == 2 && m.writes > writes_before);
+    CHECK(span_all(&m, CONST_LO, CONST_HI, 1) == 0);
+    CHECK(dev_perm(&m, CONST_LO - 0x1000) == 3 && dev_perm(&m, CONST_HI) == 3);
+    CHECK(span_all(&m, TRUST_LO, TRUST_HI, 1) == 0 && dev_perm(&m, TRUST_HI) == 3 && dev_perm(&m, TRUST_LO - 0x1000) == 3);
+    CHECK(dev_perm(&m, WWATCH) == 1 && span_all(&m, WATCH, WATCH + 0x2000, 0) == 0 && span_all(&m, WORK_LO, WORK_HI, 0) == 0);
+    CHECK(dev_perm(&m, RAM_LO) == 3 && dev_perm(&m, PANIC) == 1 && dev_perm(&m, SCRATCH) == 3 && dev_perm(&m, FB) == 3);
+    CHECK(m.reg[SOFTGPU_MON_LOCK / 4] == 1);
+    /* a second LOCKDOWN changes nothing and writes nothing */
+    const unsigned writes_after = m.writes;
+    CHECK(softgpu_lockdown_step(&ops, &st, rows, nrows, &f) == SOFTGPU_OK && m.writes == writes_after && st.downgrades == 1);
+
+    /* hand-back: no windows, and the device says so */
+    CHECK(softgpu_close_step(&ops, &st) == SOFTGPU_OK && st.stage == 0);
+    CHECK(m.reg[SOFTGPU_MON_WINDOW_COUNT / 4] == 0 && st.mon.gen == 3 && m.applied == 3 && st.mon.unconfirmed == 0);
+    CHECK(span_all(&m, RAM_LO, RAM_LO + 0x100000, 0) == 0);
+    const unsigned writes_closed = m.writes;
+    CHECK(softgpu_close_step(&ops, &st) == SOFTGPU_OK && m.writes == writes_closed);       /* closed twice: nothing more */
+}
+
+__attribute__((unused)) static void test_lockdown_unprepared(void)
+{
+    /* M2: gpu_prepare returned before softgpu_prepare (GPU block off): page 1 was never opened. LOCKDOWN must not derive a
+     * table or write one register, least of all to physical address 0 of a zeroed monitor. */
+    static struct model m;
+    struct softgpu_state st;
+    const struct softgpu_mon_ops ops = {&m, m_rd, m_wr};
+    struct stage2_range rows[SOFTGPU_ROWS_MAX];
+    const struct softgpu_facts f = board_facts();
+    const unsigned nrows = board_rows(rows);
+    model_fresh(&m);
+    memset(&st, 0, sizeof st);
+    CHECK(softgpu_lockdown_step(&ops, &st, rows, nrows, &f) == SOFTGPU_OK);
+    CHECK(m.writes == 0 && st.stage == 0 && !st.const_ro && st.downgrades == 0 && st.mon.gen == 0 && !st.mon.failed);
+    CHECK(softgpu_close_step(&ops, &st) == SOFTGPU_OK && m.writes == 0);
+}
+
+__attribute__((unused)) static void test_lockdown_failure(void)
+{
+    static struct model m;
+    struct softgpu_state st;
+    const struct softgpu_mon_ops ops = {&m, m_rd, m_wr};
+    struct stage2_range rows[SOFTGPU_ROWS_MAX];
+    const struct softgpu_facts f = board_facts();
+    const unsigned nrows = board_rows(rows);
+    model_fresh(&m);
+    memset(&st, 0, sizeof st);
+    CHECK(softgpu_prepare_windows(&ops, &st, P1, rows, nrows, &f) == SOFTGPU_OK);
+    /* the device stops applying: the downgrade is refused (the seal must not happen), the device is failed closed, and the
+     * monitor stays failed */
+    m.never_apply = 1;
+    CHECK(softgpu_lockdown_step(&ops, &st, rows, nrows, &f) == SOFTGPU_E_APPLIED);
+    CHECK(!st.const_ro && st.stage == 1 && st.mon.failed && st.downgrades == 0 && m.reg[SOFTGPU_MON_WINDOW_COUNT / 4] == 0);
+    CHECK(st.mon.unconfirmed == 1);                       /* the zero table was not confirmed either: the device is suspect */
+    m.never_apply = 0;
+    CHECK(softgpu_lockdown_step(&ops, &st, rows, nrows, &f) == SOFTGPU_E_DEVICE && !st.const_ro);
+    /* hand-back still takes the windows away and now gets the confirmation */
+    CHECK(softgpu_close_step(&ops, &st) == SOFTGPU_OK && m.reg[SOFTGPU_MON_WINDOW_COUNT / 4] == 0 && m.applied == st.mon.gen);
+
+    /* a device that never confirms the zero table at hand-back is counted and reported, not ignored */
+    model_fresh(&m);
+    memset(&st, 0, sizeof st);
+    CHECK(softgpu_prepare_windows(&ops, &st, P1, rows, nrows, &f) == SOFTGPU_OK);
+    m.never_apply = 1;
+    CHECK(softgpu_close_step(&ops, &st) == SOFTGPU_E_APPLIED && st.mon.unconfirmed == 1 && st.stage == 0);
+    /* a device that ignores the count write is caught by the read-back */
+    model_fresh(&m);
+    memset(&st, 0, sizeof st);
+    CHECK(softgpu_prepare_windows(&ops, &st, P1, rows, nrows, &f) == SOFTGPU_OK);
+    m.ignore_count = 1;
+    CHECK(softgpu_close_step(&ops, &st) == SOFTGPU_E_DEVICE && st.mon.unconfirmed == 1);
+}
+
+__attribute__((unused)) static void test_prepare_refusals(void)
+{
+    static struct model m;
+    struct softgpu_state st;
+    const struct softgpu_mon_ops ops = {&m, m_rd, m_wr};
+    struct stage2_range rows[SOFTGPU_ROWS_MAX];
+    const struct softgpu_facts f = board_facts();
+    const unsigned nrows = board_rows(rows);
+    /* L2: a device a previous monitor used, or monitorless=on (LOCK set, generation 1 applied): refuse, touch nothing */
+    model_fresh(&m);
+    m.reg[SOFTGPU_MON_LOCK / 4] = 1;
+    m.applied = 1;
+    m.reg[SOFTGPU_MON_GEN / 4] = 1;
+    memset(&st, 0, sizeof st);
+    CHECK(softgpu_prepare_windows(&ops, &st, P1, rows, nrows, &f) == SOFTGPU_E_DEVICE && m.writes == 0 && st.stage == 0);
+    model_fresh(&m);
+    m.reg[SOFTGPU_MON_LOCK / 4] = 1;                                      /* LOCK alone is enough */
+    CHECK(softgpu_mon_open(&ops, &st.mon, P1) == SOFTGPU_E_DEVICE && m.writes == 0);
+    model_fresh(&m);
+    m.reg[SOFTGPU_MON_GEN / 4] = 5;                                       /* so is a generation already written */
+    CHECK(softgpu_mon_open(&ops, &st.mon, P1) == SOFTGPU_E_DEVICE && m.writes == 0);
+    model_fresh(&m);
+    m.applied = 3;                                                        /* or applied */
+    CHECK(softgpu_mon_open(&ops, &st.mon, P1) == SOFTGPU_E_DEVICE && m.writes == 0);
+    model_fresh(&m);
+    CHECK(softgpu_mon_open(&ops, &st.mon, P1) == SOFTGPU_OK);
+    /* an empty table is still a table; a device that never applies is refused before LOCK is written */
+    model_fresh(&m);
+    memset(&st, 0, sizeof st);
+    CHECK(softgpu_prepare_windows(&ops, &st, P1, rows, 0, &f) == SOFTGPU_OK);     /* an empty table is still a table */
+    model_fresh(&m);
+    memset(&st, 0, sizeof st);
+    m.never_apply = 1;
+    CHECK(softgpu_prepare_windows(&ops, &st, P1, rows, nrows, &f) == SOFTGPU_E_APPLIED && !st.mon.locked && st.stage == 0 &&
+          m.reg[SOFTGPU_MON_LOCK / 4] == 0);
+}
+
 int main(void)
 {
     test_fragments();
@@ -358,6 +533,10 @@ int main(void)
     test_program();
     test_gic();
     test_random();
+    test_lockdown();
+    test_lockdown_unprepared();
+    test_lockdown_failure();
+    test_prepare_refusals();
 #endif
     printf("{\"softgpu_windows_checks\":%u,\"softgpu_windows_failures\":%u}\n", checks, failures);
     return failures != 0;

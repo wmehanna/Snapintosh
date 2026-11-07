@@ -153,7 +153,7 @@ class SoftGpuSpec:
     intid: int
 
     def __post_init__(self):
-        if (self.page0 & (SOFTGPU_PAGE - 1) or not SOFTGPU_WINDOW[0] <= self.page0 <= SOFTGPU_WINDOW[1] - SOFTGPU_PAGE or
+        if (self.page0 & (SOFTGPU_PAGE - 1) or not SOFTGPU_WINDOW[0] <= self.page0 <= SOFTGPU_WINDOW[1] - 2 * SOFTGPU_PAGE or
                 not SOFTGPU_INTID_FIRST <= self.intid <= SOFTGPU_INTID_LAST):
             raise ValueError(f'SoftGPU page 0 {self.page0:#x} / INTID {self.intid} are not a device page and an SPI')
 
@@ -181,7 +181,7 @@ def softgpu_rows(words):
         return None
     magic, flags, page0, page1, intid = words
     if (magic != SOFTGPU_MAGIC or flags != SOFTGPU_F_PAGE0 or page0 & (SOFTGPU_PAGE - 1) or
-            not SOFTGPU_WINDOW[0] <= page0 <= SOFTGPU_WINDOW[1] - SOFTGPU_PAGE or page1 != page0 + SOFTGPU_PAGE or not SOFTGPU_INTID_FIRST <= intid <= SOFTGPU_INTID_LAST):
+            not SOFTGPU_WINDOW[0] <= page0 <= SOFTGPU_WINDOW[1] - 2 * SOFTGPU_PAGE or page1 != page0 + SOFTGPU_PAGE or not SOFTGPU_INTID_FIRST <= intid <= SOFTGPU_INTID_LAST):
         return None
     return [(page0, page0 + SOFTGPU_PAGE)]
 

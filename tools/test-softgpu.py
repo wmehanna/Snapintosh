@@ -31,7 +31,8 @@ FIXTURE = (ROOT / 'tools/fixtures/virt-softgpu.dtb').read_bytes()
 MUTATIONS = (
     ('no magic check', 'p->magic == SOFTGPU_MAGIC && ', ''),
     ('no flags check', 'p->flags == SOFTGPU_F_PAGE0 && ', ''),
-    ('no window check', 'p->page0_pa >= SOFTGPU_WINDOW_LO && p->page0_pa + SOFTGPU_PAGE <= SOFTGPU_WINDOW_HI &&', ''),
+    ('no window check', 'p->page0_pa >= SOFTGPU_WINDOW_LO && p->page0_pa + 2 * SOFTGPU_PAGE <= SOFTGPU_WINDOW_HI &&', ''),
+    ('page 1 may sit past the window', 'p->page0_pa + 2 * SOFTGPU_PAGE <= SOFTGPU_WINDOW_HI', 'p->page0_pa + SOFTGPU_PAGE <= SOFTGPU_WINDOW_HI'),
     ('no alignment check', ' && !(p->page0_pa & (SOFTGPU_PAGE - 1))', ''),
     ('page 1 anywhere', 'p->page1_pa == p->page0_pa + SOFTGPU_PAGE &&', ''),
     ('any interrupt', ' &&\n           p->intid >= SOFTGPU_INTID_FIRST && p->intid <= SOFTGPU_INTID_LAST', ''),
@@ -139,12 +140,33 @@ WINDOW_MUTATIONS = (
     ('overlapping rows are accepted', 'if (r->lo < rows[j].hi && rows[j].lo < r->hi) return SOFTGPU_E_ARG;', ''),
     ('applied is not awaited', 'while (ops->rd(ops->ctx, p1 + SOFTGPU_MON_GEN_APPLIED) != m->gen)', 'while (0)'),
     ('the table is not read back', 'if (!same) {', 'if (0) {'),
-    ('a failure leaves the windows', 'ops->wr(ops->ctx, m->page1 + SOFTGPU_MON_WINDOW_COUNT, 0);\n    m->gen++;', 'm->gen++;'),
+    ('a failure leaves the windows', 'ops->wr(ops->ctx, p1 + SOFTGPU_MON_WINDOW_COUNT, 0);\n    m->gen++;', 'm->gen++;'),
     ('a failed device takes another table', 'if (m->failed) return SOFTGPU_E_DEVICE;\n    if (n > ', 'if (n > '),
     ('lock is not read back', '!= 1) { m->failed = 1; return SOFTGPU_E_LOCK; }', '!= 1) { }'),
     ('unsorted tables are programmed', ' ||\n            (i && w[i].ipa_base < w[i - 1].ipa_base + w[i - 1].size)) return SOFTGPU_E_ARG;', ') return SOFTGPU_E_ARG;'),
     ('a secure line is routed', 'if (!((ops->rd(ops->ctx, pri) >> shift) & 0xffu)) return SOFTGPU_E_ARG;', ''),
     ('stale rows survive a smaller table', 'for (unsigned i = n; i < m->nwin; i++)', 'for (unsigned i = n; i < 0; i++)'),
+    # W5 audit M3: the monitor steps themselves (boot table, LOCKDOWN downgrade, hand-back), proved by the table the device holds
+    ('LOCKDOWN programs the boot table again', 'int e = softgpu_apply(ops, st, rows, nrows, f, 1);', 'int e = softgpu_apply(ops, st, rows, nrows, f, 0);'),
+    ('the boot table already has the const region read-only', 'e = softgpu_apply(ops, st, rows, nrows, f, 0);', 'e = softgpu_apply(ops, st, rows, nrows, f, 1);'),
+    ('the trust-cache cut is short', 'stage2_trust_end(f->trust_pa, f->trust_size)', 'f->trust_pa + 0x4000'),
+    ('the trust cache stays writable', 'f->trust_pa, stage2_trust_end(f->trust_pa, f->trust_size), SOFTGPU_PERM_READ}', 'f->trust_pa, stage2_trust_end(f->trust_pa, f->trust_size), 3}'),
+    ('the write-watch page stays writable', 'f->write_watch_pa + SOFTGPU_PAGE, SOFTGPU_PERM_READ}', 'f->write_watch_pa + SOFTGPU_PAGE, 3}'),
+    ('the monitor work area keeps a window', '{f->work_base, f->work_end, 0}', '{f->work_base, f->work_end, SOFTGPU_PERM_READ}'),
+    ('the handoff watch pages keep a window', 'f->watch_pa + f->watch_count * SOFTGPU_PAGE, 0}', 'f->watch_pa + f->watch_count * SOFTGPU_PAGE, 3}'),
+    ('the const cut is not applied', 'if (const_ro)\n        cuts', 'if (0 && const_ro)\n        cuts'),
+    ('the const cut is writable', 'f->const_begin, f->const_end, SOFTGPU_PERM_READ}', 'f->const_begin, f->const_end, 3}'),
+    ('close is skipped', 'if (st->stage) e = softgpu_mon_close(ops, &st->mon);', 'if (0) e = softgpu_mon_close(ops, &st->mon);'),
+    ('close is not confirmed', 'if (ops->rd(ops->ctx, p1 + SOFTGPU_MON_WINDOW_COUNT) != 0) { m->unconfirmed++; return SOFTGPU_E_DEVICE; }', ''),
+    ('close does not wait for the device', 'if (++polls >= SOFTGPU_APPLIED_POLLS) { m->unconfirmed++; return SOFTGPU_E_APPLIED; }', 'if (++polls >= SOFTGPU_APPLIED_POLLS) { return SOFTGPU_E_APPLIED; }'),
+    ('LOCKDOWN touches a monitor that was never opened', 'if (!st->stage) return SOFTGPU_OK; ', ''),
+    ('a second LOCKDOWN reprograms the device', 'if (st->const_ro) return SOFTGPU_OK; ', ''),
+    ('LOCKDOWN does not remember the downgrade', 'st->const_ro = 1;\n    st->stage = 2;', 'st->stage = 2;'),
+    ('the boot table is never locked', 'e = softgpu_mon_lock(ops, &st->mon);\n    if (e) return e;\n    st->stage = 1;', 'st->stage = 1;'),
+    ('prepare forgets it is prepared', '    st->stage = 1;\n    return SOFTGPU_OK;', '    return SOFTGPU_OK;'),
+    ('a used device is accepted', 'if (ops->rd(ops->ctx, page1_pa + SOFTGPU_MON_LOCK) || ops->rd(ops->ctx, page1_pa + SOFTGPU_MON_GEN) ||\n        ops->rd(ops->ctx, page1_pa + SOFTGPU_MON_GEN_APPLIED)) return SOFTGPU_E_DEVICE;', ''),
+    ('a locked device is accepted', 'if (ops->rd(ops->ctx, page1_pa + SOFTGPU_MON_LOCK) || ', 'if ('),
+    ('a device with a generation is accepted', ' || ops->rd(ops->ctx, page1_pa + SOFTGPU_MON_GEN) ||', ' ||'),
 )
 
 
@@ -200,17 +222,22 @@ class Windows(unittest.TestCase):
         self.assertLess(lock.index('softgpu_lockdown(c)'), lock.index('const_region_seal(c)'))
         self.assertRegex(lock, r'softgpu_lockdown\(c\)\) \{\s*record\(c,EV_MAP_FAILED[^;]*;\s*return 0;')
         self.assertIn('#if SNAP_SOFTGPU', dispatch[dispatch.rindex('#if', 0, dispatch.index('softgpu_lockdown(c)')):])
-        # the boot windows come from the same rows stage 2 maps, are programmed before LOCK, and LOCK before the route
+        # the glue only fills in facts and calls the pure steps; what they do is proved on the host (test-softgpu-windows.c)
         self.assertIn('return stage2_base_rows(c,rows);', glue)
         prepare = glue[glue.index('static int64_t softgpu_prepare'):glue.index('static int softgpu_lockdown')]
-        self.assertLess(prepare.index('softgpu_windows_apply(c,0)'), prepare.index('softgpu_mon_lock('))
-        self.assertLess(prepare.index('softgpu_mon_lock('), prepare.index('softgpu_gic_route('))
-        self.assertIn('softgpu_windows_apply(c,0) || softgpu_mon_lock', prepare)
-        # monitor memory, the trust cache, the write-watch page, the handoff pages and (after LOCKDOWN) the const region
-        cuts = glue[glue.index('static unsigned softgpu_windows_cuts'):glue.index('static int softgpu_windows_apply')]
-        for needle in ('c->work_base,c->work_end,0', 'p->trust_cache.pa', 'p->write_watch_pa', 'p->watch_pa,p->watch_pa+p->watch_count*0x1000,0',
-                       'if(const_ro)', 'p->const_begin,p->const_end,SOFTGPU_PERM_READ'):
-            self.assertIn(needle, cuts)
+        self.assertLess(prepare.index('softgpu_prepare_windows('), prepare.index('softgpu_gic_route('))
+        self.assertIn('softgpu_prepare_windows(&softgpu_mon_hw,&SGS(c),s->page1_pa,rows,n,&f)) return -46;', prepare)
+        self.assertIn('return softgpu_lockdown_step(&softgpu_mon_hw,&SGS(c),rows,n,&f);', glue)
+        self.assertIn('softgpu_close_step(&softgpu_mon_hw,&SGS(c))', glue)
+        # every fact the cuts read comes from the field of the same name
+        facts = glue[glue.index('static void softgpu_facts_of'):glue.index('static int64_t softgpu_prepare')]
+        for needle in ('.work_base=c->work_base,.work_end=c->work_end', '.trust_pa=p->trust_cache.pa,.trust_size=p->trust_cache.size',
+                       '.write_watch_pa=p->write_watch_pa', '.watch_pa=p->watch_pa,.watch_count=p->watch_count',
+                       '.const_begin=p->const_begin,.const_end=p->const_end'):
+            self.assertIn(needle, facts)
+        # the trust span has one definition, shared with the stage-2 build that seals it
+        self.assertIn('uint64_t end=stage2_trust_end(begin,p->trust_cache.size);', read_source(ROOT / 'probes/xnuboot/stage2.c'))
+        self.assertIn('stage2_trust_end(f->trust_pa, f->trust_size)', SOURCE.read_text())
         # the interrupt: the SoftGPU SPI replaces the Adreno line on AIC 975, and async.c matches the same INTID
         self.assertIn('irqfwd_add(&c->gpu.irq,(uint32_t)GPU_FWD_INTID(c),ADRENO_AIC_IRQ)', glue)
         self.assertIn('pending == GPU_FWD_INTID(c)', read_source(ROOT / 'probes/xnuboot/async.c'))
@@ -237,6 +264,51 @@ class Windows(unittest.TestCase):
                              cwd=ROOT, capture_output=True, text=True)
         self.assertNotEqual(run.returncode, 0)
         self.assertIn('SNAP_SOFTGPU does not support SNAP_USER_HW_WALK_S2RO', run.stderr)
+
+
+def build_stage2_test(work, source):
+    out = work / 'test-softgpu-stage2'
+    result = subprocess.run(['cc', '-std=gnu11', '-O1', '-g', '-fsanitize=address,undefined', '-Wall', '-Wextra', '-Werror', '-Ishadow', '-Icompat',
+                             'tools/test-softgpu-stage2.c', str(source), 'shadow/mmu.c', 'shadow/shadow.c', 'shadow/stage2.c', '-o', str(out)],
+                            cwd=ROOT, capture_output=True, text=True)
+    if result.returncode:
+        raise AssertionError(result.stderr)
+    return subprocess.run([str(out)], capture_output=True, text=True)
+
+
+class Stage2Drift(unittest.TestCase):
+    """W5 audit L1: the windows derived by compat/softgpu.c against a real stage-2 tree built with shadow/stage2.c."""
+
+    def test_windows_match_a_real_stage2_tree(self):
+        with tempfile.TemporaryDirectory() as work:
+            run = build_stage2_test(Path(work), SOURCE)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertIn('"softgpu_stage2_failures":0', run.stdout)
+
+    def test_drift_from_stage2_is_caught(self):
+        text = SOURCE.read_text()
+        for name, old, new in (
+                ('trust cut short of the sealed span', 'stage2_trust_end(f->trust_pa, f->trust_size)', 'f->trust_pa + 0x4000'),
+                ('trust cut missing', 'if (f->trust_pa)\n', 'if (0)\n'),
+                ('write-watch cut missing', 'if (f->write_watch_pa)\n', 'if (0)\n'),
+                ('const cut missing after LOCKDOWN', 'if (const_ro)\n', 'if (0 && const_ro)\n'),
+                ('const cut starts late', 'f->const_begin, f->const_end', 'f->const_begin + 0x1000, f->const_end')):
+            with self.subTest(name), tempfile.TemporaryDirectory() as work:
+                self.assertIn(old, text, name)
+                mutant = Path(work) / 'softgpu.c'
+                mutant.write_text(text.replace(old, new, 1).replace('#include "softgpu.h"', f'#include "{ROOT}/compat/softgpu.h"'))
+                self.assertNotEqual(build_stage2_test(Path(work), mutant).returncode, 0, name)
+
+    def test_stage2_narrowing_inventory(self):
+        """The narrowings vcpu_stage2_prepare and const_region_seal make after stage2_build are the ones the windows know about
+        (trust cache read-only, write-watch page read-only, const region read-only at LOCKDOWN). A new one must be added to
+        softgpu_cuts and tools/test-softgpu-stage2.c, then this inventory updated."""
+        text = read_source(ROOT / 'probes/xnuboot/stage2.c')
+        self.assertEqual(len(re.findall(r'stage2_readonly\(', text)), 2)                  # trust cache, const seal
+        self.assertEqual(len(re.findall(r'\*slot &= ~\(1UL << 7\)', text)), 1)             # write-watch page
+        self.assertEqual(len(re.findall(r'descriptor\s*&=\s*~\(1UL\s*<<\s*7\)', text)), 1)    # the guards of the sealed range
+        for name in ('stage2_map_page', 'stage2_unmap', 'stage2_reclaim', 'stage2_writable'):
+            self.assertNotIn(name, text)
 
 
 class Parser(unittest.TestCase):
@@ -370,7 +442,7 @@ class Loader(unittest.TestCase):
                          [(0x0C000000, 0x0C001000, 'rw', 'SoftGPU page 0 (Device-nGnRE)')])
 
     def test_spec_refusals(self):
-        for page0, intid in ((0, 144), (0x0C000800, 144), (0x0C000000, 31), (0x0C000000, 1020), (0x7_0C000000, 144), (0x0E000000, 144), (0x0BFFF000, 144), (0x80000000, 144)):
+        for page0, intid in ((0, 144), (0x0C000800, 144), (0x0C000000, 31), (0x0C000000, 1020), (0x7_0C000000, 144), (0x0E000000, 144), (0x0DFFF000, 144), (0x0BFFF000, 144), (0x80000000, 144)):
             with self.subTest(page0=page0, intid=intid), self.assertRaises(ValueError):
                 adreno.SoftGpuSpec(page0, intid)
 

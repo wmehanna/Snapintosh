@@ -26,7 +26,7 @@
 #define SOFTGPU_STAGE2_MAX      1u
 #define SOFTGPU_PAGE            0x1000ULL
 #define SOFTGPU_WINDOW_LO       0x0c000000ULL   /* virt platform-bus window: the only place the device can sit */
-#define SOFTGPU_WINDOW_HI       0x0e000000ULL
+#define SOFTGPU_WINDOW_HI       0x0e000000ULL   /* page 0 and page 1 both end at or below this */
 #define SOFTGPU_INTID_FIRST     32u     /* the first SPI */
 #define SOFTGPU_INTID_LAST      1019u
 
@@ -42,7 +42,7 @@ _Static_assert(sizeof(struct softgpu_params) == 8 * SOFTGPU_PARAMS_WORDS, "probe
 static inline int softgpu_valid(const struct softgpu_params *p)
 {
     return p->magic == SOFTGPU_MAGIC && p->flags == SOFTGPU_F_PAGE0 && !(p->page0_pa & (SOFTGPU_PAGE - 1)) &&
-           p->page0_pa >= SOFTGPU_WINDOW_LO && p->page0_pa + SOFTGPU_PAGE <= SOFTGPU_WINDOW_HI && p->page1_pa == p->page0_pa + SOFTGPU_PAGE &&
+           p->page0_pa >= SOFTGPU_WINDOW_LO && p->page0_pa + 2 * SOFTGPU_PAGE <= SOFTGPU_WINDOW_HI && p->page1_pa == p->page0_pa + SOFTGPU_PAGE &&
            p->intid >= SOFTGPU_INTID_FIRST && p->intid <= SOFTGPU_INTID_LAST;
 }
 
@@ -124,15 +124,21 @@ struct softgpu_mon {
     uint32_t locked;
     uint32_t failed;            /* a program or lock failed: the device was failed closed and stays so */
     uint32_t programs;
+    uint32_t unconfirmed;       /* zero tables (fail-closed or close) the device never confirmed: it may still hold windows */
 };
 
-/* Read MON_MAGIC and start from generation 0. SOFTGPU_E_DEVICE when page 1 does not answer "SMON". */
+/* Read MON_MAGIC and start from generation 0. SOFTGPU_E_DEVICE when page 1 does not answer "SMON" or the device is not
+ * fresh: LOCK set, or a table generation already written or applied (a monitorless=on device, or one a previous monitor
+ * run used and nothing reset). Nothing is written. */
 int softgpu_mon_open(const struct softgpu_mon_ops *ops, struct softgpu_mon *m, uint64_t page1_pa);
 /* Write the table, apply it and prove it. On any failure the device is left with no windows (count 0, generation + 1),
  * m->failed is set and the error returned; a failed monitor accepts no further table. */
 int softgpu_mon_program(const struct softgpu_mon_ops *ops, struct softgpu_mon *m, const struct sgpu_window *w,
                        unsigned n);
 int softgpu_mon_lock(const struct softgpu_mon_ops *ops, struct softgpu_mon *m);
+/* Take every window away and wait for the device to say so (WINDOWS_GEN_APPLIED), also from a failed monitor. 0 when the
+ * device confirmed (count 0 read back); SOFTGPU_E_APPLIED or SOFTGPU_E_DEVICE otherwise, with m->unconfirmed set. */
+int softgpu_mon_close(const struct softgpu_mon_ops *ops, struct softgpu_mon *m);
 
 /* GIC route of the device's SPI at the monitor's EL2: disabled, level, group 1, priority, affinity; the SPI is enabled by
  * the forwarder (compat/irq-forward.c). SOFTGPU_E_ARG when the priority reads back zero (a Secure line). */
@@ -154,3 +160,34 @@ struct softgpu_state {
     uint32_t windows;           /* windows in the current table */
     uint64_t downgrades;        /* tables narrowed ahead of a stage-2 change */
 };
+_Static_assert(sizeof(struct softgpu_state) == 56, "struct root_ext / struct context page counts were sized for this");
+
+/* Everything the monitor withholds from the device on top of the stage-2 rows, as plain values (the glue fills it from
+ * struct context and struct params; tools/test-softgpu-windows.c fills it by hand). All of it is a stage-2 fact. */
+struct softgpu_facts {
+    uint64_t work_base, work_end;       /* the monitor's table arena and vCPU runtime pages: no window */
+    uint64_t trust_pa, trust_size;      /* the trust cache (0 = none): READ only, span stage2_trust_end() */
+    uint64_t write_watch_pa;            /* the write-watch page (0 = none): READ only */
+    uint64_t watch_pa, watch_count;     /* the handoff watch pages (guarded in stage 2): no window */
+    uint64_t const_begin, const_end;    /* the kernel const region: READ only once LOCKDOWN sealed it (const_ro) */
+};
+
+/* The cuts for facts; room for SOFTGPU_CUTS_MAX. const_ro is passed explicitly so the downgrade is derived before stage 2
+ * changes. Returns the number of cuts. */
+unsigned softgpu_cuts(const struct softgpu_facts *f, int const_ro, struct softgpu_cut *cuts);
+
+/* Derive the windows for rows + facts and make the device hold exactly them. 0, or a SOFTGPU_E_* after which the device has
+ * no windows. The caller changes stage 2 only after this returns 0. */
+int softgpu_apply(const struct softgpu_mon_ops *ops, struct softgpu_state *st, const struct stage2_range *rows,
+                  unsigned nrows, const struct softgpu_facts *f, int const_ro);
+/* Boot: open page 1 at page1_pa, program the boot table (const region still writable), LOCK. Non-zero: refuse the boot. */
+int softgpu_prepare_windows(const struct softgpu_mon_ops *ops, struct softgpu_state *st, uint64_t page1_pa,
+                            const struct stage2_range *rows, unsigned nrows, const struct softgpu_facts *f);
+/* SPTM_FN_LOCKDOWN, before the const region is sealed: the device loses WRITE on it first. Does nothing, and writes no
+ * register, when prepare never ran (stage 0: page 1 was never opened) or the downgrade is already applied. Non-zero: the
+ * device did not confirm (it was failed closed) and the seal must be refused. */
+int softgpu_lockdown_step(const struct softgpu_mon_ops *ops, struct softgpu_state *st, const struct stage2_range *rows,
+                          unsigned nrows, const struct softgpu_facts *f);
+/* The guest's memory is handed back: zero table, confirmed. Returns 0, or the error when the device never confirmed
+ * (counted in st->mon.unconfirmed; the caller records it). */
+int softgpu_close_step(const struct softgpu_mon_ops *ops, struct softgpu_state *st);
