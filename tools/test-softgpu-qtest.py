@@ -30,13 +30,30 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 QEMU = os.environ.get('SNAP_SOFTGPU_QEMU', '/opt/qemu-11.0.3-softgpu/bin/qemu-system-aarch64')
-RENDERD = os.environ.get('SNAP_SOFTGPU_RENDERD', '/home/snap/src/renderd/build/renderd')
+# Default: the fixed renderd tree when it exists, else the shared one. The paths used are printed (I3), and the render process
+# must carry the window-copy fix (renderd's --test-copy-pause-us knob exists only since W5), or the renderd runs fail loudly
+# instead of quietly testing an old renderd.
+RENDERD = os.environ.get('SNAP_SOFTGPU_RENDERD') or next(
+    (p for p in ('/home/snap/src/renderd-w5fix/build/renderd', '/home/snap/src/renderd/build/renderd') if os.path.exists(p)),
+    '/home/snap/src/renderd/build/renderd')
+RENDERD_FIX_MARKER = b'--test-copy-pause-us'
+
+
+def renderd_is_fixed(path):
+    try:
+        return RENDERD_FIX_MARKER in Path(path).read_bytes()
+    except OSError:
+        return False
+
+
+print(f'test-softgpu-qtest: QEMU={QEMU} RENDERD={RENDERD}', file=sys.stderr)
 RAM, RAM_SIZE = 0x40000000, 0x10000000
 RING, STATUS, BOOT, ARENA, ARENA_SIZE = RAM, RAM + 0x4000, RAM + 0x8000, RAM + 0x100000, 0x100000
 CONTROL, RODATA, HIDDEN, CONST = RAM + 0x200000, RAM + 0x300000, RAM + 0x400000, RAM + 0x500000
 BIG, BIG_SIZE = RAM + 0x1000000, 0x8000000      # 128 MiB: one FILL_BUFFER write-back long enough to be caught part way
 P0, P1 = 0x0C000000, 0x0C001000
 E_ACCESS, E_MEMORY = -4, -12
+E_APPLIED = -4                  # SOFTGPU_E_APPLIED
 RD, WR = 1, 2
 U64 = ctypes.c_uint64     # ctypes passes a bare int as a 32-bit C int: 64-bit parameters must be wrapped
 
@@ -193,6 +210,9 @@ def cuts(const_ro=False):
 class Windows:
     """The window rules against the real device model; RENDERD_PATH selects the backend (None: libsgpu in the QEMU process)."""
     RENDERD_PATH = None
+    # per-test device properties (renderd runs): renderd never answers its 2nd window table, the kill of it is reported late
+    DEVICE_EXTRA = {'test_unconfirmed_table_withholds_applied':
+                    ',renderd-test-hang-windows=2,renderd-reap-ms=300,renderd-test-reap-delay-ms=1500'}
 
     @classmethod
     def setUpClass(cls):
@@ -212,7 +232,7 @@ class Windows:
         self.sock = str(self.work / f'qt-{self.id().rsplit(".", 1)[-1]}.sock')
         if self.RENDERD_PATH:
             machine = ['-object', 'memory-backend-memfd,id=ram0,size=256M,share=on', '-machine', 'virt,memory-backend=ram0']
-            device = f'snap-softgpu,renderd={self.RENDERD_PATH},renderd-allow-fault=on'
+            device = f'snap-softgpu,renderd={self.RENDERD_PATH},renderd-allow-fault=on' + self.DEVICE_EXTRA.get(self._testMethodName, '')
         else:
             machine = ['-machine', 'virt']
             device = 'snap-softgpu'
@@ -352,6 +372,20 @@ class Windows:
         self.assertEqual(b.mon.unconfirmed, 0)
         self.assertTrue(b.mon.failed == 0 and b.mon.nwin == 0)
 
+    def test_unconfirmed_table_withholds_applied(self):
+        """T2: a render process that does not confirm the table and is not reaped in time leaves WINDOWS_GEN_APPLIED where it was,
+        so the monitor fails closed (renderd runs only: the in-process backend has nothing to confirm)."""
+        if not self.RENDERD_PATH:
+            self.skipTest('needs the render process')
+        q, lib = self.q, self.lib
+        b, _ = self.bring_up(cuts())
+        before = q.readl(P1 + 0x18)
+        self.assertEqual(before, b.mon.gen)
+        # the hand-back zero table is renderd's 2nd: it hangs, is killed after the 2 s control timeout and is not reaped within 300 ms
+        self.assertEqual(lib.softgpu_mon_close(ctypes.byref(b.ops), ctypes.byref(b.mon)), E_APPLIED)
+        self.assertEqual(q.readl(P1 + 0x18), before, 'APPLIED moved although the old render process may still be running')
+        self.assertEqual(b.mon.unconfirmed, 1)
+
     def stage_table(self, b, cut_list):
         """Write a table into page 1's staging registers without the generation: the device swaps only on the WINDOWS_GEN write."""
         win = (Window * 64)()
@@ -414,6 +448,10 @@ class DeviceWindows(Windows, unittest.TestCase):
 class DeviceWindowsRenderd(Windows, unittest.TestCase):
     """The device executes in the render process, guest RAM in a shared memfd (the board's configuration)."""
     RENDERD_PATH = RENDERD
+
+    def test_renderd_has_the_window_copy_fix(self):
+        """I3: this run exercises a renderd with op_copy (check and copy in one critical section), not the old shared build."""
+        self.assertTrue(renderd_is_fixed(RENDERD), f'{RENDERD} predates the W5 audit fixes: set SNAP_SOFTGPU_RENDERD to a current build')
 
 
 if __name__ == '__main__':
