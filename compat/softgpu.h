@@ -6,8 +6,8 @@
  *
  * What the guest reaches: exactly one 4 KiB page, the device's page 0 (0x0C000000 on `-machine virt` with one
  * snap-softgpu), identity-mapped at stage 2 as Device-nGnRE, read-write, execute-never. Page 1 (the monitor's
- * DMA-window and LOCK page, +0x1000) is never mapped: the block carries its address only so a later wave can
- * program it from EL2, and a guest access to it is a stage-2 fault.
+ * DMA-window and LOCK page, +0x1000) is never mapped: a guest access to it is a stage-2 fault. Wave W5 (below, and
+ * compat/softgpu.c) programs page 1 from EL2: the DMA windows, derived from the stage-2 map, then LOCK.
  *
  * The loader (probes/run.py, probes/adreno.py) reads the address and the SPI from the device node of a QEMU
  * `dumpdtb` pre-pass and appends struct softgpu_params after struct params (after the i2c-input, QCC2072 and
@@ -17,6 +17,7 @@
 #pragma once
 #include <stdint.h>
 #include "stage2.h"
+#include "softgpu_protocol.h"
 
 /* "SNAPSGP1", little-endian: the loader appended these words on purpose. */
 #define SOFTGPU_MAGIC           0x3150475350414e53ULL
@@ -59,3 +60,97 @@ static inline int softgpu_window(const struct softgpu_params *p, uint64_t pa)
 {
     return softgpu_valid(p) && pa >= p->page0_pa && pa < p->page0_pa + SOFTGPU_PAGE;
 }
+
+/* ---- Wave W5: DMA windows, LOCK and the interrupt (plans/p6-softgpu-integration.md W5, spec 1.3) ------------------------
+ *
+ * The device may touch guest memory only through the windows the monitor writes to page 1, and refuses RING_ENABLE until
+ * LOCK. The invariant: the device never has more access to a page than stage 2 gives the guest kernel. So the windows
+ * are not a second policy, they are the stage-2 rows (the same list stage2_build maps) minus what the monitor withholds,
+ * and every narrowing reaches the device before it reaches stage 2:
+ *
+ *   softgpu_derive      pure: rows + cuts -> sorted, non-overlapping windows (RW rows READ|WRITE, RO rows READ, device
+ *                       rows and everything unmapped left out, never a READ run merged into a READ|WRITE window)
+ *   softgpu_mon_program table, WINDOW_COUNT, WINDOWS_GEN + 1, read WINDOWS_GEN_APPLIED back, read the table back; any
+ *                       difference fails closed (no windows) and is an error
+ *   softgpu_mon_lock    LOCK = 1, read back
+ *
+ * Register access goes through ops, so tools/test-softgpu-windows.c runs the same code against a model of page 1. */
+#ifndef SOFTGPU_WINDOWS_MAX      /* the device has 64 (spec 1.3); a host test builds a smaller table to reach the limit rules */
+#define SOFTGPU_WINDOWS_MAX     64u
+#endif
+#define SOFTGPU_ROWS_MAX        32u     /* stage-2 rows softgpu_derive reads */
+#define SOFTGPU_CUTS_MAX        16u
+#define SOFTGPU_PERM_READ       SGPU_WIN_READ
+#define SOFTGPU_PERM_WRITE      SGPU_WIN_WRITE
+#define SOFTGPU_MON_MAGIC       0x4e4f4d53u
+#define SOFTGPU_MON_WINDOW_COUNT 0x004u
+#define SOFTGPU_MON_LOCK        0x008u
+#define SOFTGPU_MON_FEATURE0    0x00cu
+#define SOFTGPU_MON_FEATURE1    0x010u
+#define SOFTGPU_MON_GEN         0x014u
+#define SOFTGPU_MON_GEN_APPLIED 0x018u
+#define SOFTGPU_MON_WINDOW0     0x100u
+#define SOFTGPU_APPLIED_POLLS   1024u
+
+enum {
+    SOFTGPU_OK = 0,
+    SOFTGPU_E_ARG = -1,         /* rows or cuts malformed (unaligned, overlapping rows, over a list maximum) */
+    SOFTGPU_E_TOO_MANY = -2,    /* writable runs alone exceed SOFTGPU_WINDOWS_MAX: the monitor refuses to lock (1.3) */
+    SOFTGPU_E_DEVICE = -3,      /* no SMON magic, or the table read back differs: the device was failed closed */
+    SOFTGPU_E_APPLIED = -4,     /* WINDOWS_GEN_APPLIED never reached the generation: the device was failed closed */
+    SOFTGPU_E_LOCK = -5,        /* LOCK did not read back as set */
+};
+
+/* The device may keep at most `keep` (SOFTGPU_PERM_* bits, 0 = none) of what the rows give inside [lo, hi). The span is
+ * widened to whole pages outward, so a cut can only remove access. */
+struct softgpu_cut {
+    uint64_t lo, hi;
+    uint32_t keep;
+};
+
+int softgpu_derive(const struct stage2_range *rows, unsigned nrows, const struct softgpu_cut *cuts, unsigned ncuts,
+                   struct sgpu_window *out, unsigned *nout);
+
+struct softgpu_mon_ops {
+    void *ctx;
+    uint32_t (*rd)(void *ctx, uint64_t pa);
+    void (*wr)(void *ctx, uint64_t pa, uint32_t v);
+};
+
+struct softgpu_mon {
+    uint64_t page1;             /* physical address of page 1 */
+    uint32_t gen;               /* last WINDOWS_GEN written */
+    uint32_t nwin;              /* windows in the table the device holds (0 after a failure) */
+    uint32_t locked;
+    uint32_t failed;            /* a program or lock failed: the device was failed closed and stays so */
+    uint32_t programs;
+};
+
+/* Read MON_MAGIC and start from generation 0. SOFTGPU_E_DEVICE when page 1 does not answer "SMON". */
+int softgpu_mon_open(const struct softgpu_mon_ops *ops, struct softgpu_mon *m, uint64_t page1_pa);
+/* Write the table, apply it and prove it. On any failure the device is left with no windows (count 0, generation + 1),
+ * m->failed is set and the error returned; a failed monitor accepts no further table. */
+int softgpu_mon_program(const struct softgpu_mon_ops *ops, struct softgpu_mon *m, const struct sgpu_window *w,
+                       unsigned n);
+int softgpu_mon_lock(const struct softgpu_mon_ops *ops, struct softgpu_mon *m);
+
+/* GIC route of the device's SPI at the monitor's EL2: disabled, level, group 1, priority, affinity; the SPI is enabled by
+ * the forwarder (compat/irq-forward.c). SOFTGPU_E_ARG when the priority reads back zero (a Secure line). */
+struct softgpu_gic_ops {
+    void *ctx;
+    uint32_t (*rd)(void *ctx, uint64_t pa);
+    void (*wr)(void *ctx, uint64_t pa, uint32_t v);
+};
+int softgpu_gic_route(const struct softgpu_gic_ops *ops, uint64_t gicd, uint32_t intid, uint64_t affinity,
+                      uint32_t priority);
+
+/* The monitor's per-run state: page 1 and the table the device holds. Kept in struct root_ext (the wide root cache's arena
+ * pages, so struct context keeps its page count) or, without SNAP_ROOT_CACHE_WIDE, at the end of struct context. */
+struct softgpu_state {
+    struct softgpu_mon mon;     /* page 1, generation, lock, failure */
+    uint32_t const_ro;          /* the kernel const region is sealed: windows keep it read-only from now on */
+    uint32_t stage;             /* 0 none, 1 windows programmed and locked, 2 LOCKDOWN downgrade applied */
+    int32_t last;               /* the last SOFTGPU_* result of a derive or program, 0 ok */
+    uint32_t windows;           /* windows in the current table */
+    uint64_t downgrades;        /* tables narrowed ahead of a stage-2 change */
+};

@@ -214,6 +214,93 @@ static int gpu_cpu_writeback(void *ctx,uint64_t pa)
     return gpu_aperture_writeback(ctx,pa);
 }
 #endif
+#if SNAP_SOFTGPU
+/* Wave W5 (compat/softgpu.h, plans/p6-softgpu-integration.md): the SoftGPU device's DMA windows, LOCK and interrupt.
+ * Page 1 is reached at EL2 only (el2_map_softgpu); the guest has no mapping of it. */
+#if SNAP_ROOT_CACHE_WIDE
+#define SGS(c) ((c)->root_ext->softgpu)
+#else
+#define SGS(c) ((c)->softgpu)
+#endif
+static uint32_t softgpu_rd(void *ctx,uint64_t pa) {(void)ctx;return *(volatile uint32_t *)(uintptr_t)pa;}
+static void softgpu_wr(void *ctx,uint64_t pa,uint32_t v) {(void)ctx;*(volatile uint32_t *)(uintptr_t)pa=v;}
+static const struct softgpu_mon_ops softgpu_mon_hw={0,softgpu_rd,softgpu_wr};
+static const struct softgpu_gic_ops softgpu_gic_hw={0,softgpu_rd,softgpu_wr};
+/* The rows the guest has right now, as stage 2 maps guest memory (stage2_base_rows). Device rows are not DMA targets. */
+static unsigned softgpu_windows_rows(const struct context *c,struct stage2_range *rows)
+{
+    return stage2_base_rows(c,rows);
+}
+/* What the monitor withholds from, or narrows for, the device on top of those rows. Everything here is also a stage-2 fact:
+ * the monitor's own table arena and the vCPU runtime pages (the work area, read-only to the guest, never DMA), the trust
+ * cache and the write-watch page (read-only), the handoff watch pages (guarded, so unreachable), and the kernel const
+ * region once LOCKDOWN seals it (const_ro). `const_ro` is passed explicitly so the downgrade is derived before stage 2. */
+static unsigned softgpu_windows_cuts(const struct context *c,int const_ro,struct softgpu_cut *cuts)
+{
+    const struct params *p=c->params;
+    unsigned n=0;
+    cuts[n++]=(struct softgpu_cut){c->work_base,c->work_end,0};
+    if(p->trust_cache.pa)
+        cuts[n++]=(struct softgpu_cut){p->trust_cache.pa,
+            p->trust_cache.pa+0x4000+((p->trust_cache.size+0x3fff)&~0x3fffUL),SOFTGPU_PERM_READ};
+    if(p->write_watch_pa)
+        cuts[n++]=(struct softgpu_cut){p->write_watch_pa,p->write_watch_pa+0x1000,SOFTGPU_PERM_READ};
+    if(p->watch_count)
+        cuts[n++]=(struct softgpu_cut){p->watch_pa,p->watch_pa+p->watch_count*0x1000,0};
+    if(const_ro)
+        cuts[n++]=(struct softgpu_cut){p->const_begin,p->const_end,SOFTGPU_PERM_READ};
+    return n;
+}
+/* Derive the windows for the current stage-2 facts and make the device hold exactly them. 0, or a SOFTGPU_E_* (after which
+ * the device has no windows). The caller changes stage 2 only after this returns 0. */
+static int softgpu_windows_apply(struct context *c,int const_ro)
+{
+    struct stage2_range rows[SOFTGPU_ROWS_MAX];
+    struct softgpu_cut cuts[SOFTGPU_CUTS_MAX];
+    struct sgpu_window win[SOFTGPU_WINDOWS_MAX];
+    unsigned nwin=0;
+    int e=softgpu_derive(rows,softgpu_windows_rows(c,rows),cuts,softgpu_windows_cuts(c,const_ro,cuts),win,&nwin);
+    if(!e) e=softgpu_mon_program(&softgpu_mon_hw,&SGS(c).mon,win,nwin);
+    SGS(c).last=e;
+    if(!e) SGS(c).windows=nwin;
+    return e;
+}
+/* Before the guest runs: the windows from the freshly built stage 2, then LOCK (the device refuses RING_ENABLE until it),
+ * then the interrupt's route (the CPU that runs vCPU 0 takes it). -46: windows or lock refused; -47: the GIC route. */
+static int64_t softgpu_prepare(struct context *c,uint64_t affinity)
+{
+    const struct softgpu_params *s=softgpu_block(c->params);
+    SGS(c).const_ro=0;
+    if(softgpu_mon_open(&softgpu_mon_hw,&SGS(c).mon,s->page1_pa)) return -46;
+    if(softgpu_windows_apply(c,0) || softgpu_mon_lock(&softgpu_mon_hw,&SGS(c).mon)) return -46;
+    SGS(c).stage=1;
+    if(softgpu_gic_route(&softgpu_gic_hw,c->params->gpu.gicd,(uint32_t)s->intid,affinity,ADRENO_IRQ_PRIORITY)) return -47;
+    return 0;
+}
+/* SPTM_FN_LOCKDOWN, before const_region_seal: narrow the device first, then stage 2 (spec 1.3, "downgrade"). A device that
+ * does not confirm has already been failed closed; the seal is refused. */
+static int softgpu_lockdown(struct context *c)
+{
+    if(SGS(c).const_ro) return 0;                 /* already narrowed: LOCKDOWN twice changes nothing more */
+    int e=softgpu_windows_apply(c,1);
+    if(e) return e;
+    SGS(c).const_ro=1;
+    SGS(c).stage=2;
+    SGS(c).downgrades++;
+    return 0;
+}
+/* The guest's memory is handed back: the device keeps no window into it. */
+static void softgpu_close(struct context *c)
+{
+    if(SGS(c).stage && !SGS(c).mon.failed)
+        (void)softgpu_mon_program(&softgpu_mon_hw,&SGS(c).mon,0,0);
+    SGS(c).stage=0;
+}
+/* The INTID the forwarded interrupt arrives as (async.c compares it with ICC_HPPIR1). */
+#define GPU_FWD_INTID(c) ((uint64_t)softgpu_block((c)->params)->intid)
+#else
+#define GPU_FWD_INTID(c) ((uint64_t)ADRENO_INTID)
+#endif
 static int64_t gpu_prepare(struct context *c)
 {
     const struct params *p=c->params;
@@ -233,11 +320,25 @@ static int64_t gpu_prepare(struct context *c)
         return c->gpu.prepare=(uint64_t)(int64_t)ADRENO_E_PARAMS,ADRENO_E_PARAMS;
     struct adreno_ops o=gpu_ops(c);
     int e=adreno_adopt(&o,&g,&c->gpu,p->mem_low,p->mem_high);
+#if SNAP_SOFTGPU
+    /* The Adreno's line is not on this board (INTID 0x14C is past QEMU's GIC); AIC 975 carries the SoftGPU device's SPI
+     * instead, the source the kext's adreno node names. One forwarded line per AIC source (compat/irq-forward.c). */
+    if (!e && irqfwd_add(&c->gpu.irq,(uint32_t)GPU_FWD_INTID(c),ADRENO_AIC_IRQ)!=IRQFWD_OK) e=ADRENO_E_PARAMS;
+#else
     if (!e && irqfwd_add(&c->gpu.irq,ADRENO_INTID,ADRENO_AIC_IRQ)!=IRQFWD_OK) e=ADRENO_E_PARAMS;
+#endif
     if (e) return e;
     e=adreno_gic_route(&o,&g,&c->gpu);
     if (e) return c->gpu.prepare=(uint64_t)(int64_t)e,e;
+#if SNAP_SOFTGPU
+    {
+        int64_t sg=softgpu_prepare(c,g.affinity);
+        if (sg) return c->gpu.prepare=(uint64_t)sg,sg;
+    }
+    fwd_enable(c,(uint32_t)GPU_FWD_INTID(c));
+#else
     fwd_enable(c,ADRENO_INTID);
+#endif
     if (g.flags&ADRENO_F_RING) {
         e=adreno_fence(&o,&g,&c->gpu,0x534e0001u);
         record(c,EV_GPU_RING,0,0x534e0001u,(uint64_t)(int64_t)e,c->gpu.fence_ticks);
@@ -263,6 +364,9 @@ static int64_t gpu_prepare(struct context *c)
 /* Before the guest's memory is handed back: the line, then the GPU (adreno.h). */
 static int gpu_quiesce(struct context *c)
 {
+#if SNAP_SOFTGPU
+    softgpu_close(c);
+#endif
     if (!(c->gpu.status&ADRENO_S_ADOPTED)) return 1;
     struct irqfwd_ops f=fwd_ops(c);
     struct adreno_ops o=gpu_ops(c);

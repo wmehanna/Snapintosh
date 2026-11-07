@@ -1327,6 +1327,14 @@ static int monitor_call_impl(struct context *c, uint64_t *frame, uint64_t *elr)
         frame[0] = SPTM_SUCCESS;
         break;
     case SPTM_FN_LOCKDOWN:
+#if SNAP_SOFTGPU
+        /* The device loses write access to the const region before the kernel does (spec 1.3, downgrade order). A device
+         * that does not confirm was failed closed by softgpu_mon_program: the seal is refused rather than raced. */
+        if(softgpu_lockdown(c)) {
+            record(c,EV_MAP_FAILED,*elr,0x53475055,c->params->const_begin,c->params->const_end);
+            return 0;
+        }
+#endif
         if(const_region_seal(c)) {
             record(c,EV_MAP_FAILED,*elr,0x434f4e53,c->params->const_begin,c->params->const_end);
             return 0;

@@ -261,7 +261,8 @@ MULTI = {'pauth-address': ['probes/pauth-address.S','compat/pauth-native.S'],
 # Units linked only when their opt-in define is in FLAGS, after MULTI's, so a build without the define links exactly
 # the objects it always did and its ELF stays byte-identical.
 OPTIONAL = {'xnuboot': (('-DSNAP_ADRENO_COHERENT=1', 'compat/adreno-coherent.c'),
-                        ('-DSNAP_EDP_BACKLIGHT=1', 'compat/edp-backlight.c'))}
+                        ('-DSNAP_EDP_BACKLIGHT=1', 'compat/edp-backlight.c'),
+                        ('-DSNAP_SOFTGPU=1', 'compat/softgpu.c'))}
 
 
 def optional_sources(name, flags):
@@ -719,6 +720,11 @@ PREPARE_FAILURES = {
          '(out of work area)',
     -39: 'the EL2 stage-1 map could not be given a Device block for the GPU aperture: the live '
          'TCR_EL2 is not the 4 KiB, T0SZ-described regime the walker reads (nothing was written)',
+    -45: 'SNAP_SOFTGPU: the EL2 stage-1 map could not be given a Device block over the SoftGPU device page 1 (the live '
+         'TCR_EL2 is not the 4 KiB, T0SZ-described regime the walker reads)',
+    -46: 'SNAP_SOFTGPU: page 1 did not answer SMON, or the DMA windows or LOCK were refused or not confirmed by the device '
+         '(the device was left with no windows); see compat/softgpu.h SOFTGPU_E_*',
+    -47: 'SNAP_SOFTGPU: the device SPI could not be routed (priority reads back zero: a Secure line)',
     # Stage 4 (compat/adreno.h): adoption of q1n1's GPU, before the guest runs.
     -60: 'Adreno params invalid, or the arena overlaps guest memory, or SPI 0x14C is Secure',
     -61: 'Adreno CX GDSC is off: run the q1n1 bring-up and adopt again',

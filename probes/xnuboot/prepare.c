@@ -81,6 +81,10 @@ int64_t xnuboot_prepare(void)
      * (probes/xnuboot/el2_map.c): one Device block, before the first CX or GMU
      * read, so that read is a word and not a fault. */
     if (p->gpu.flags && el2_map_gpu_aperture()) return -39;
+#if SNAP_SOFTGPU
+    /* Page 1 of the SoftGPU device, EL2 only (the stage-2 allow-list already refused the boot, -44, without a valid block). */
+    if (el2_map_softgpu(softgpu_block(p)->page1_pa)) return -45;
+#endif
 #if SNAP_EL0_MEMO
     /* A new master key: every derivation kept in either level is another
      * domain's (pauth_domain_user_cached_wide flushes on the epoch). */

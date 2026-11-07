@@ -640,6 +640,11 @@ _Static_assert(SNAP_FAST_VCPU_TRAPS && SNAP_ROOT_CACHE_WIDE,
 #else
 #define SNAP_SOFTGPU_ROWS 0
 #endif
+#if SNAP_SOFTGPU && SNAP_USER_HW_WALK_S2RO
+/* The DMA windows follow stage 2 at LOCKDOWN and nowhere else. SNAP_USER_HW_WALK_S2RO flips single guest frames to
+ * read-only at every RETYPE, which the device would not see: it could write a page-table frame the kernel cannot. */
+#error "SNAP_SOFTGPU does not support SNAP_USER_HW_WALK_S2RO: its run-time S2AP changes are not tracked by the DMA windows"
+#endif
 /* NEST_REGION and UNNEST_REGION answer nested shared level-3 tables from the
  * SWITCH_ROOT memo's retained verdicts (or scan each once), and UNMAP_TABLE of
  * an empty level-3 table proves both trees empty table by table

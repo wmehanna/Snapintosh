@@ -125,6 +125,120 @@ class Monitor(unittest.TestCase):
         self.assertEqual(len(sizes), 1)
 
 
+SOURCE = ROOT / 'compat/softgpu.c'
+WINDOW_MUTATIONS = (
+    ('device rows are DMA targets', 'if ((r->low & MEMATTR_MASK) != S2_MEMATTR_NORMAL) return 0;', ''),
+    ('read-only rows are writable', 'if ((r->low & S2AP_MASK) == S2_AP_RO) return SOFTGPU_PERM_READ;',
+     'if ((r->low & S2AP_MASK) == S2_AP_RO) return SOFTGPU_PERM_READ | SOFTGPU_PERM_WRITE;'),
+    ('write-only rows are readable', 'return 0;                   /* S2AP none', 'return SOFTGPU_PERM_READ;                   /* S2AP none'),
+    ('a cut can widen', 'perm &= cuts[i].keep;', 'perm |= cuts[i].keep;'),
+    ('a cut is not widened outward', 'clo[i] = cuts[i].lo & ~PAGE_MASK;', 'clo[i] = cuts[i].lo;'),
+    ('read-only runs merge into read-write windows', ' && seg[nseg - 1].flags == perm) {', ') {'),
+    ('the drop rule drops writable runs', 'if (seg[i].flags == SOFTGPU_PERM_READ && (pick', 'if ((pick'),
+    ('too many writable runs are tolerated', 'if (pick == nseg) return SOFTGPU_E_TOO_MANY;', 'if (pick == nseg) break;'),
+    ('overlapping rows are accepted', 'if (r->lo < rows[j].hi && rows[j].lo < r->hi) return SOFTGPU_E_ARG;', ''),
+    ('applied is not awaited', 'while (ops->rd(ops->ctx, p1 + SOFTGPU_MON_GEN_APPLIED) != m->gen)', 'while (0)'),
+    ('the table is not read back', 'if (!same) {', 'if (0) {'),
+    ('a failure leaves the windows', 'ops->wr(ops->ctx, m->page1 + SOFTGPU_MON_WINDOW_COUNT, 0);\n    m->gen++;', 'm->gen++;'),
+    ('a failed device takes another table', 'if (m->failed) return SOFTGPU_E_DEVICE;\n    if (n > ', 'if (n > '),
+    ('lock is not read back', '!= 1) { m->failed = 1; return SOFTGPU_E_LOCK; }', '!= 1) { }'),
+    ('unsorted tables are programmed', ' ||\n            (i && w[i].ipa_base < w[i - 1].ipa_base + w[i - 1].size)) return SOFTGPU_E_ARG;', ') return SOFTGPU_E_ARG;'),
+    ('a secure line is routed', 'if (!((ops->rd(ops->ctx, pri) >> shift) & 0xffu)) return SOFTGPU_E_ARG;', ''),
+    ('stale rows survive a smaller table', 'for (unsigned i = n; i < m->nwin; i++)', 'for (unsigned i = n; i < 0; i++)'),
+)
+
+
+def build_windows(work, source, extra=()):
+    out = work / 'test-softgpu-windows'
+    result = subprocess.run(['cc', '-std=c11', '-O1', '-g', '-fsanitize=address,undefined', '-Wall', '-Wextra', '-Werror', *extra,
+                             '-Ishadow', '-Icompat', 'tools/test-softgpu-windows.c', str(source), '-o', str(out)], cwd=ROOT,
+                            capture_output=True, text=True)
+    if result.returncode:
+        raise AssertionError(result.stderr)
+    return subprocess.run([str(out)], capture_output=True, text=True)
+
+
+class Windows(unittest.TestCase):
+    """W5: compat/softgpu.c derives the device's DMA windows from the stage-2 rows and proves them on the device."""
+
+    def test_host_model(self):
+        for extra in ((), ('-DSOFTGPU_WINDOWS_MAX=8u',)):          # the second reaches the over-the-limit rules
+            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as work:
+                run = build_windows(Path(work), SOURCE, extra)
+                self.assertEqual(run.returncode, 0, run.stderr)
+                self.assertIn('"softgpu_windows_failures":0', run.stdout)
+
+    def test_weakened_source_fails(self):
+        text = SOURCE.read_text()
+        for name, old, new in WINDOW_MUTATIONS:
+            with self.subTest(name), tempfile.TemporaryDirectory() as work:
+                self.assertIn(old, text, name)
+                mutant = Path(work) / 'softgpu.c'
+                mutant.write_text(text.replace(old, new, 1).replace('#include "softgpu.h"', f'#include "{ROOT}/compat/softgpu.h"'))
+                bad = False
+                for extra in ((), ('-DSOFTGPU_WINDOWS_MAX=8u',)):
+                    try:
+                        bad |= build_windows(Path(work), mutant, extra).returncode != 0
+                    except AssertionError:
+                        bad = True
+                self.assertTrue(bad, name)
+
+    def test_limits_match_the_device(self):
+        text = (ROOT / 'compat/softgpu.h').read_text()
+        self.assertRegex(text, r'#ifndef SOFTGPU_WINDOWS_MAX[^\n]*\n#define SOFTGPU_WINDOWS_MAX\s+64u\n#endif')
+        proto = (ROOT / 'compat/softgpu_protocol.h').read_text()
+        self.assertIn('SGPU_MREG_WINDOW0=0x100', proto.replace(' ', ''))
+        for name, value in (('SOFTGPU_MON_MAGIC', '0x4e4f4d53u'), ('SOFTGPU_MON_WINDOW_COUNT', '0x004u'), ('SOFTGPU_MON_LOCK', '0x008u'),
+                            ('SOFTGPU_MON_GEN', '0x014u'), ('SOFTGPU_MON_GEN_APPLIED', '0x018u'), ('SOFTGPU_MON_WINDOW0', '0x100u')):
+            self.assertRegex(text, rf'#define {name}\s+{value}')
+
+    def test_monitor_wiring(self):
+        glue = read_source(ROOT / 'probes/xnuboot/gpu_glue.c')
+        dispatch = read_source(ROOT / 'probes/xnuboot/sptm_dispatch.c')
+        # LOCKDOWN: the device is narrowed first, stage 2 second (spec 1.3), and a refusal stops before the seal
+        lock = dispatch[dispatch.index('case SPTM_FN_LOCKDOWN:'):]
+        self.assertLess(lock.index('softgpu_lockdown(c)'), lock.index('const_region_seal(c)'))
+        self.assertRegex(lock, r'softgpu_lockdown\(c\)\) \{\s*record\(c,EV_MAP_FAILED[^;]*;\s*return 0;')
+        self.assertIn('#if SNAP_SOFTGPU', dispatch[dispatch.rindex('#if', 0, dispatch.index('softgpu_lockdown(c)')):])
+        # the boot windows come from the same rows stage 2 maps, are programmed before LOCK, and LOCK before the route
+        self.assertIn('return stage2_base_rows(c,rows);', glue)
+        prepare = glue[glue.index('static int64_t softgpu_prepare'):glue.index('static int softgpu_lockdown')]
+        self.assertLess(prepare.index('softgpu_windows_apply(c,0)'), prepare.index('softgpu_mon_lock('))
+        self.assertLess(prepare.index('softgpu_mon_lock('), prepare.index('softgpu_gic_route('))
+        self.assertIn('softgpu_windows_apply(c,0) || softgpu_mon_lock', prepare)
+        # monitor memory, the trust cache, the write-watch page, the handoff pages and (after LOCKDOWN) the const region
+        cuts = glue[glue.index('static unsigned softgpu_windows_cuts'):glue.index('static int softgpu_windows_apply')]
+        for needle in ('c->work_base,c->work_end,0', 'p->trust_cache.pa', 'p->write_watch_pa', 'p->watch_pa,p->watch_pa+p->watch_count*0x1000,0',
+                       'if(const_ro)', 'p->const_begin,p->const_end,SOFTGPU_PERM_READ'):
+            self.assertIn(needle, cuts)
+        # the interrupt: the SoftGPU SPI replaces the Adreno line on AIC 975, and async.c matches the same INTID
+        self.assertIn('irqfwd_add(&c->gpu.irq,(uint32_t)GPU_FWD_INTID(c),ADRENO_AIC_IRQ)', glue)
+        self.assertIn('pending == GPU_FWD_INTID(c)', read_source(ROOT / 'probes/xnuboot/async.c'))
+        # the windows go when the guest's memory is handed back
+        quiesce = glue[glue.index('static int gpu_quiesce'):]
+        self.assertLess(quiesce.index('softgpu_close(c)'), quiesce.index('ADRENO_S_ADOPTED'))
+        # page 1 is EL2-mapped, never given to the guest
+        self.assertIn('el2_map_softgpu(softgpu_block(p)->page1_pa)', read_source(ROOT / 'probes/xnuboot/prepare.c'))
+        self.assertNotIn('page1_pa', read_source(ROOT / 'probes/xnuboot/stage2.c'))
+        # the unsupported combination is a build error
+        main = read_source(ROOT / 'probes/xnuboot.c')
+        self.assertIn('#if SNAP_SOFTGPU && SNAP_USER_HW_WALK_S2RO\n/*', main)
+        self.assertIn('#error "SNAP_SOFTGPU does not support SNAP_USER_HW_WALK_S2RO', main)
+
+    def test_build_flag_selects_the_unit(self):
+        self.assertIn("('-DSNAP_SOFTGPU=1', 'compat/softgpu.c')", read_source(ROOT / 'probes/run.py'))
+
+    def test_hw_walk_with_softgpu_is_refused(self):
+        clang = shutil.which('clang')
+        if not clang:
+            self.skipTest('clang not present')
+        run = subprocess.run([clang, '--target=aarch64-unknown-none-elf', '-ffreestanding', '-mgeneral-regs-only', '-Ishadow', '-Icompat',
+                              '-fsyntax-only', '-DSNAP_SOFTGPU=1', '-DSNAP_USER_HW_WALK=1', 'probes/xnuboot.c'],
+                             cwd=ROOT, capture_output=True, text=True)
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn('SNAP_SOFTGPU does not support SNAP_USER_HW_WALK_S2RO', run.stderr)
+
+
 class Parser(unittest.TestCase):
     def test_fixture(self):
         spec = adreno.softgpu_from_dtb(FIXTURE)

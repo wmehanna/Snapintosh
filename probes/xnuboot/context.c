@@ -474,6 +474,9 @@ struct context {
      * offset and the arena base (compat/perf-state.h struct exit_profile). */
     struct exit_profile exit_profile;
 #endif
+#if SNAP_SOFTGPU && !SNAP_ROOT_CACHE_WIDE
+    struct softgpu_state softgpu;   /* a build without the wide root cache: no arena pages to hold it (compat/softgpu.h) */
+#endif
 };
 #if SNAP_FAST_EL0_SYSREG || SNAP_SERVICE_SUBCLASS
 _Static_assert((sizeof(struct context)+4095)/4096==
@@ -629,6 +632,11 @@ struct root_ext {
     /* SNAP_ADRENO_COHERENT: the self-test's outcome and the run's mirror leaf word, under the token. Last, so no other
      * member moves. */
     struct adreno_coherent_state gpu_coherent;
+#endif
+#if SNAP_SOFTGPU
+    /* The SoftGPU device's DMA windows and lock (compat/softgpu.h, probes/xnuboot/gpu_glue.c), here and not in struct
+     * context so the context's page count, the table arena's base, does not move. Zeroed by xnuboot_setup. Last. */
+    struct softgpu_state softgpu;
 #endif
 };
 #if ADRENO_VA_WIDE && SNAP_DART_WIREDCNT

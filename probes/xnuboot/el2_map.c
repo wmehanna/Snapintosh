@@ -57,7 +57,26 @@ static int el2_map_block(uint64_t ttbr, uint64_t tcr, uint64_t mair, uint64_t va
     }
     return 0;                                /* a level-3 table: any leaf is a page */
 }
+#define EL2_SOFTGPU_BLOCK_MASK (~(EL2_GPU_BLOCK_SIZE - 1))   /* 2 MiB: the platform-bus window page 1 sits in */
 #if !defined(EL2_MAP_TEST)
+#if SNAP_SOFTGPU
+/* SNAP_SOFTGPU: the EL2 view of the device's page 1 (the DMA-window and LOCK page, +0x1000 from page 0). The guest has no
+ * stage-2 mapping of it; only EL2 reaches it, through one Device block over its 2 MiB window as above. */
+static int el2_map_softgpu(uint64_t page1)
+{
+    uint64_t sctlr, tcr, ttbr, mair;
+    __asm__ volatile("mrs %0, sctlr_el2" : "=r"(sctlr));
+    if (!(sctlr & 1)) return 0;              /* MMU off: identity, every access is Device */
+    __asm__ volatile("mrs %0, tcr_el2" : "=r"(tcr));
+    __asm__ volatile("mrs %0, ttbr0_el2" : "=r"(ttbr));
+    __asm__ volatile("mrs %0, mair_el2" : "=r"(mair));
+    uint64_t block = page1 & EL2_SOFTGPU_BLOCK_MASK;
+    int added = el2_map_block(ttbr, tcr, mair, block, block);
+    record(context_of(), EV_EL2_MAP, block, EL2_GPU_BLOCK_SIZE, 1, (uint64_t)added);
+    if (added > 0) __asm__ volatile("dsb sy; tlbi alle2; dsb sy; isb" ::: "memory");
+    return added < 0 ? added : 0;
+}
+#endif
 static int el2_map_gpu_aperture(void)
 {
     uint64_t sctlr, tcr, ttbr, mair;

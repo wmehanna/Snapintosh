@@ -134,6 +134,30 @@ static void guards_close(struct context *c)
     __asm__ volatile("dsb ish; tlbi vmalls12e1is; dsb ish; isb");
 }
 
+/* The rows every build maps first: guest RAM around the panic page, the panel when it is handed over, and this probe's
+ * read-only table arena. Up to five; vcpu_stage2_prepare appends the opt-in device rows, and the SoftGPU DMA windows
+ * (softgpu_windows_rows, gpu_glue.c) derive from this same list, so the device never sees a range the kernel does not. */
+static unsigned stage2_base_rows(const struct context *c, struct stage2_range *ranges)
+{
+    const struct params *p = c->params;
+    unsigned count = 0;
+    uint64_t panic_page = p->scratch_pa - SPTM_PANIC_PAGE_SIZE;
+    ranges[count++] = (struct stage2_range){
+        .lo = p->mem_low, .hi = panic_page, .low = S2_AP_RW | S2_ATTRS, .upper = 0};
+    ranges[count++] = (struct stage2_range){
+        .lo = panic_page, .hi = p->scratch_pa, .low = S2_AP_RO | S2_ATTRS, .upper = S2_XN};
+    ranges[count++] = (struct stage2_range){
+        .lo = p->scratch_pa, .hi = p->mem_high, .low = S2_AP_RW | S2_ATTRS, .upper = 0};
+    if (p->fb_span)
+        ranges[count++] = (struct stage2_range){
+            .lo = p->fb_pa, .hi = p->fb_pa + p->fb_span,
+            .low = S2_AP_RW | S2_ATTRS, .upper = S2_XN};
+    ranges[count++] = (struct stage2_range){
+        .lo = c->work_base, .hi = c->work_end,
+        .low = S2_AP_RO | S2_ATTRS, .upper = S2_XN};
+    return count;
+}
+
 /* Build private stage-2 tables and guards before running any guest CPU.
  * Shared allocator synchronization remains required for concurrent execution. */
 static int vcpu_stage2_prepare(struct context *c, struct vcpu *v)
@@ -181,21 +205,7 @@ static int vcpu_stage2_prepare(struct context *c, struct vcpu *v)
 #endif
         + SNAP_DISPLAY_TIMING_ROWS + SNAP_SOFTGPU_ROWS };
     struct stage2_range ranges[S2_RANGES_MAX];
-    unsigned count = 0;
-    uint64_t panic_page=p->scratch_pa-SPTM_PANIC_PAGE_SIZE;
-    ranges[count++] = (struct stage2_range){
-        .lo = p->mem_low, .hi = panic_page, .low = S2_AP_RW | S2_ATTRS, .upper = 0};
-    ranges[count++] = (struct stage2_range){
-        .lo = panic_page, .hi = p->scratch_pa, .low = S2_AP_RO | S2_ATTRS, .upper = S2_XN};
-    ranges[count++] = (struct stage2_range){
-        .lo = p->scratch_pa, .hi = p->mem_high, .low = S2_AP_RW | S2_ATTRS, .upper = 0};
-    if (p->fb_span)
-        ranges[count++] = (struct stage2_range){
-            .lo = p->fb_pa, .hi = p->fb_pa + p->fb_span,
-            .low = S2_AP_RW | S2_ATTRS, .upper = S2_XN};
-    ranges[count++] = (struct stage2_range){
-        .lo = c->work_base, .hi = c->work_end,
-        .low = S2_AP_RO | S2_ATTRS, .upper = S2_XN};
+    unsigned count = stage2_base_rows(c, ranges);
     /* Stage 4: the Adreno register windows the guest drives itself, as device
      * memory; every other block of the GPU aperture stays absent (adreno.h). */
     if (p->gpu.flags & ADRENO_F_ENABLE) {

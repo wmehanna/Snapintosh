@@ -79,7 +79,7 @@ static int xnuboot_async_locked(uint64_t elr, uint64_t which, const uint64_t *fr
     if (which == ASYNC_IRQ && (c->params->gpu.flags & ADRENO_F_ENABLE)) {
         uint64_t pending;
         __asm__ volatile("mrs %0, icc_hppir1_el1" : "=r"(pending));
-        if (pending == ADRENO_INTID) {
+        if (pending == GPU_FWD_INTID(c)) {
             gpu_irq(c);
             return device_reset_stop(c, elr, frame);
         }
