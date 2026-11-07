@@ -5,6 +5,10 @@ compat/softgpu-guest.c drives its ring, so the window rules are checked end to e
 
     python3 tools/test-softgpu-qtest.py          (skips when /opt/qemu-11.0.3-softgpu or cc is missing)
 
+SNAP_SOFTGPU_QEMU names the QEMU binary and SNAP_SOFTGPU_RENDERD the render process: every test runs twice, with the device
+executing in process and (when the render process exists) with `renderd=` and guest RAM in a shared memfd, which is how the
+board runs it. The renderd runs also prove the render process enforces the windows (W5 audit I2).
+
 Layout of the 256 MiB guest RAM at 0x40000000: ring, status page, bootstrap page, a 1 MiB arena, then four test pages: CONTROL
 (ordinary RAM), RODATA (the trust cache: READ only), HIDDEN (the monitor's memory: no window) and CONST (read-write until the
 LOCKDOWN downgrade). Checks: RING_ENABLE is refused before LOCK; CREATE_MEMORY over HIDDEN is SGPU_E_MEMORY; a WRITE binding
@@ -26,9 +30,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 QEMU = os.environ.get('SNAP_SOFTGPU_QEMU', '/opt/qemu-11.0.3-softgpu/bin/qemu-system-aarch64')
+RENDERD = os.environ.get('SNAP_SOFTGPU_RENDERD', '/home/snap/src/renderd/build/renderd')
 RAM, RAM_SIZE = 0x40000000, 0x10000000
 RING, STATUS, BOOT, ARENA, ARENA_SIZE = RAM, RAM + 0x4000, RAM + 0x8000, RAM + 0x100000, 0x100000
 CONTROL, RODATA, HIDDEN, CONST = RAM + 0x200000, RAM + 0x300000, RAM + 0x400000, RAM + 0x500000
+BIG, BIG_SIZE = RAM + 0x1000000, 0x8000000      # 128 MiB: one FILL_BUFFER write-back long enough to be caught part way
 P0, P1 = 0x0C000000, 0x0C001000
 E_ACCESS, E_MEMORY = -4, -12
 RD, WR = 1, 2
@@ -58,7 +64,7 @@ class MonOps(ctypes.Structure):
 
 class Mon(ctypes.Structure):
     _fields_ = [('page1', ctypes.c_uint64), ('gen', ctypes.c_uint32), ('nwin', ctypes.c_uint32), ('locked', ctypes.c_uint32),
-                ('failed', ctypes.c_uint32), ('programs', ctypes.c_uint32)]
+                ('failed', ctypes.c_uint32), ('programs', ctypes.c_uint32), ('unconfirmed', ctypes.c_uint32)]
 
 
 class Qtest:
@@ -158,7 +164,8 @@ class Board:
         assert n > 0
         return self.kernel(buf.raw[:n])
 
-    def fill(self, mem_id, nbytes, value, at=0):
+    def fill_async(self, mem_id, nbytes, value, at=0):
+        """Queue a FILL_BUFFER over nbytes of the object and return its ring sequence number (wait() collects it)."""
         pkt = ctypes.create_string_buffer(64)
         n = self.lib.sgpu_guest_pkt_fill_buffer(pkt, len(pkt), 0, U64(0), U64(nbytes), value)
         stream = self.alloc(pkt.raw[:n])
@@ -166,7 +173,10 @@ class Board:
         d = ctypes.create_string_buffer(64)
         self.seq += 1
         self.lib.sgpu_guest_desc_submit(d, 1, self.seq, 4, U64(stream), n, U64(bt), 1, 0xffffffff, 0, 0, U64(0))
-        return self.wait(self.push(d))
+        return self.push(d)
+
+    def fill(self, mem_id, nbytes, value, at=0):
+        return self.wait(self.fill_async(mem_id, nbytes, value, at))
 
 
 def rows():
@@ -180,8 +190,10 @@ def cuts(const_ro=False):
     return c
 
 
-@unittest.skipUnless(os.path.exists(QEMU) and shutil.which('cc'), 'softgpu QEMU or cc missing')
-class DeviceWindows(unittest.TestCase):
+class Windows:
+    """The window rules against the real device model; RENDERD_PATH selects the backend (None: libsgpu in the QEMU process)."""
+    RENDERD_PATH = None
+
     @classmethod
     def setUpClass(cls):
         cls.work = Path(tempfile.mkdtemp())
@@ -190,17 +202,59 @@ class DeviceWindows(unittest.TestCase):
                         '-o', str(lib)], cwd=ROOT, check=True)
         cls.lib = ctypes.CDLL(str(lib))
         cls.lib.sgpu_guest_ring_push.restype = ctypes.c_uint64
-        cls.sock = str(cls.work / 'qt.sock')
-        cls.proc = subprocess.Popen([QEMU, '-machine', 'virt', '-cpu', 'max', '-m', '256M', '-accel', 'qtest', '-qtest',
-                                     f'unix:{cls.sock},server=on,wait=off', '-display', 'none', '-monitor', 'none', '-serial', 'none',
-                                     '-device', 'snap-softgpu', '-S'], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        cls.q = Qtest(cls.sock)
 
     @classmethod
     def tearDownClass(cls):
-        cls.proc.kill()
-        cls.proc.wait()
         shutil.rmtree(cls.work, ignore_errors=True)
+
+    def setUp(self):
+        """A fresh device per test: LOCK and the ring are one-way."""
+        self.sock = str(self.work / f'qt-{self.id().rsplit(".", 1)[-1]}.sock')
+        if self.RENDERD_PATH:
+            machine = ['-object', 'memory-backend-memfd,id=ram0,size=256M,share=on', '-machine', 'virt,memory-backend=ram0']
+            device = f'snap-softgpu,renderd={self.RENDERD_PATH},renderd-allow-fault=on'
+        else:
+            machine = ['-machine', 'virt']
+            device = 'snap-softgpu'
+        self.log = open(self.work / 'qemu.log', 'wb')              # a pipe nobody reads fills up and stops QEMU
+        self.proc = subprocess.Popen([QEMU, *machine, '-cpu', 'max', '-m', '256M', '-accel', 'qtest', '-qtest',
+                                      f'unix:{self.sock},server=on,wait=off', '-display', 'none', '-monitor', 'none', '-serial', 'none',
+                                      '-device', device, '-S'], stdout=subprocess.DEVNULL, stderr=self.log)
+        self.q = Qtest(self.sock)
+        self.lib = type(self).lib
+
+    def tearDown(self):
+        self.proc.kill()
+        self.proc.wait()
+        self.log.close()
+
+    def bring_up(self, cut_list):
+        """Open the monitor, program the table, LOCK, then the spec 1.9 bring-up: ring, status page, arena object and context."""
+        q, lib = self.q, self.lib
+        b = Board(lib, q)
+        self.assertEqual(lib.softgpu_mon_open(ctypes.byref(b.ops), ctypes.byref(b.mon), P1), 0)
+        r, win, n = b.program(rows(), cut_list)
+        self.assertEqual(r, 0)
+        self.assertEqual(lib.softgpu_mon_lock(ctypes.byref(b.ops), ctypes.byref(b.mon)), 0)
+        q.writel(P0 + 0x18, 0x00010000)
+        q.writel(P0 + 0x10, q.readl(P0 + 0x08) & 1)
+        for off, val in ((0x30, RING), (0x40, STATUS)):
+            q.writel(P0 + off, val & 0xffffffff)
+            q.writel(P0 + off + 4, val >> 32)
+        q.writel(P0 + 0x38, 256)
+        q.writel(P0 + 0x24, 1)
+        self.assertEqual(q.readl(P0 + 0x20) & 2, 2, 'RING_ENABLE accepted once locked')
+        run = struct.pack('<QQ', ARENA, ARENA_SIZE)
+        buf = ctypes.create_string_buffer(64)
+        n_pkt = lib.sgpu_guest_pkt_create_memory(buf, len(buf), 1, 1, U64(ARENA_SIZE), U64(0), 0, run, 1)
+        q.write(BOOT, buf.raw[:n_pkt])
+        d = ctypes.create_string_buffer(64)
+        lib.sgpu_guest_desc_kernel(d, 1 << 15, U64(BOOT), n_pkt, 0xffffffff, 0)
+        self.assertEqual(b.wait(b.push(d)), 0)
+        ctx = ctypes.create_string_buffer(32)
+        n_ctx = lib.sgpu_guest_pkt_create_context(ctx, len(ctx), 1)
+        self.assertEqual(b.kernel(ctx.raw[:n_ctx]), 0)
+        return b, n
 
     def test_windows_end_to_end(self):
         q, lib = self.q, self.lib
@@ -242,10 +296,11 @@ class DeviceWindows(unittest.TestCase):
 
         # the monitor's memory has no window: the object cannot be made
         self.assertEqual(b.create_memory(2, HIDDEN), E_MEMORY)
-        # the trust cache is readable but not writable: the object exists, a WRITE binding is refused, the page is unchanged
+        # the trust cache is readable but not writable: the object exists, a WRITE binding is refused as ACCESS (spec 1.3), the
+        # page is unchanged
         q.write(RODATA, bytes([0x11]) * 64)
         self.assertEqual(b.create_memory(3, RODATA), 0)
-        self.assertIn(b.fill(3, 4, 0xEE), (E_ACCESS, E_MEMORY))
+        self.assertEqual(b.fill(3, 4, 0xEE), E_ACCESS)
         self.assertEqual(q.read(RODATA, 64), bytes([0x11]) * 64)
         # ordinary memory takes the same write
         q.write(CONTROL, bytes(64))
@@ -260,22 +315,105 @@ class DeviceWindows(unittest.TestCase):
         self.assertEqual(r, 0)
         self.assertEqual((b.mon.gen, q.readl(P1 + 0x18)), (2, 2))
         self.assertEqual(q.readl(P0 + 0x20) & 0x40, 0, 'no descriptor was running: nothing went stale')
-        self.assertIn(b.fill(5, 64, 0x44), (E_ACCESS, E_MEMORY), 'the earlier alias lost WRITE')
+        self.assertEqual(b.fill(5, 64, 0x44), E_ACCESS, 'the earlier alias lost WRITE')
         self.assertEqual(q.read(CONST, 64), bytes([0x33]) * 64)
         self.assertEqual(b.create_memory(6, CONST), 0, 'a new object over the read-only run is fine')
-        self.assertIn(b.fill(6, 64, 0x44), (E_ACCESS, E_MEMORY))
+        self.assertEqual(b.fill(6, 64, 0x44), E_ACCESS)
         self.assertEqual(q.read(CONST, 64), bytes([0x33]) * 64)
         # a table that makes ordinary memory unreachable: CREATE_MEMORY over it fails, memory untouched
         r, _, _ = b.program(rows(), cuts(const_ro=True) + [Cut(CONTROL, CONTROL + 0x4000, 0)])
         self.assertEqual(r, 0)
         self.assertEqual(b.create_memory(7, CONTROL), E_MEMORY)
-        self.assertIn(b.fill(4, 64, 0x77), (E_ACCESS, E_MEMORY), 'the old object over CONTROL lost READ and WRITE')
+        self.assertEqual(b.fill(4, 64, 0x77), E_MEMORY, 'the old object over CONTROL lost READ and WRITE: the memory is gone')
         self.assertEqual(q.read(CONTROL, 64), bytes([0x5A]) * 64)
         # a table the monitor itself refuses (unsorted) writes nothing: the device keeps the generation it has
         bad = (Window * 2)(Window(CONTROL + 0x1000, 0x1000, CONTROL + 0x1000, 3, 0), Window(CONTROL, 0x1000, CONTROL, 3, 0))
         self.assertEqual(lib.softgpu_mon_program(ctypes.byref(b.ops), ctypes.byref(b.mon), bad, 2), -1)     # unsorted: refused before any write
         self.assertEqual(q.readl(P1 + 0x14), b.mon.gen)
         self.assertEqual(q.readl(P1 + 0x18), b.mon.gen)
+
+    def test_used_device_is_refused(self):
+        """L2: a device a monitor already programmed (or monitorless=on) is not opened a second time."""
+        q, lib = self.q, self.lib
+        b = Board(lib, q)
+        self.assertEqual(lib.softgpu_mon_open(ctypes.byref(b.ops), ctypes.byref(b.mon), P1), 0)
+        self.assertEqual(b.program(rows(), cuts())[0], 0)
+        again = Board(lib, q)
+        self.assertEqual(lib.softgpu_mon_open(ctypes.byref(again.ops), ctypes.byref(again.mon), P1), -3)
+        self.assertEqual(lib.softgpu_mon_lock(ctypes.byref(b.ops), ctypes.byref(b.mon)), 0)
+        self.assertEqual(lib.softgpu_mon_open(ctypes.byref(again.ops), ctypes.byref(again.mon), P1), -3)
+
+    def test_close_confirms_the_empty_table(self):
+        """L3: the hand-back zero table is applied and read back on the real device."""
+        q, lib = self.q, self.lib
+        b, _ = self.bring_up(cuts())
+        self.assertEqual(lib.softgpu_mon_close(ctypes.byref(b.ops), ctypes.byref(b.mon)), 0)
+        self.assertEqual((q.readl(P1 + 4), q.readl(P1 + 0x14), q.readl(P1 + 0x18)), (0, b.mon.gen, b.mon.gen))
+        self.assertEqual(b.mon.unconfirmed, 0)
+        self.assertTrue(b.mon.failed == 0 and b.mon.nwin == 0)
+
+    def stage_table(self, b, cut_list):
+        """Write a table into page 1's staging registers without the generation: the device swaps only on the WINDOWS_GEN write."""
+        win = (Window * 64)()
+        n = ctypes.c_uint(0)
+        self.assertEqual(self.lib.softgpu_derive((Stage2Range * 1)(*rows()), 1, (Cut * len(cut_list))(*cut_list), len(cut_list), win,
+                                                 ctypes.byref(n)), 0)
+        for i in range(n.value):
+            words = struct.unpack('<8I', bytes(win[i]))
+            for k, v in enumerate(words):
+                self.q.writel(P1 + 0x100 + 32 * i + 4 * k, v)
+        self.q.writel(P1 + 4, n.value)
+        return n.value
+
+    def frontier(self, base, pages):
+        """First page of [base, base+pages*4096) whose first byte is still zero. A write-back goes front to back, so the
+        predicate 'written' is monotone and a binary search finds it."""
+        lo, hi = 0, pages
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if self.q.read(base + mid * 4096, 1) != b'\0':
+                lo = mid + 1
+            else:
+                hi = mid
+        return lo
+
+    def test_downgrade_during_writeback_is_final(self):
+        """M1: a FILL_BUFFER over 128 MiB ends in a write-back of the whole object. Part way through it the monitor takes WRITE
+        away (the table is staged, so the only thing between the first byte and the downgrade is the WINDOWS_GEN write) and
+        reads WINDOWS_GEN_APPLIED. From that read on not one byte may change under the old table: the frontier of the
+        write-back is the same when the descriptor has ended."""
+        q, lib = self.q, self.lib
+        b, _ = self.bring_up(cuts())
+        pages = BIG_SIZE // 4096
+        self.assertEqual(b.create_memory(2, BIG, size=BIG_SIZE), 0)
+        gen = b.mon.gen
+        self.stage_table(b, cuts() + [Cut(BIG, BIG + BIG_SIZE, RD)])
+        seq = b.fill_async(2, BIG_SIZE, 0x5A)
+        deadline = time.time() + 30
+        while q.read(BIG, 1) == b'\0':                      # the write-back has begun
+            self.assertLess(time.time(), deadline, 'the write-back never started')
+            if struct.unpack('<Q', q.read(STATUS, 8))[0] >= seq:
+                _, status, offset = struct.unpack('<QiI', q.read(STATUS + 0x1000 + 16 * ((seq - 1) % 256), 16))
+                self.fail(f'the descriptor ended with status {status} (packet offset {offset:#x}) before writing anything')
+        q.writel(P1 + 0x14, gen + 1)                       # WINDOWS_GEN: the monitor's downgrade
+        self.assertEqual(q.readl(P1 + 0x18), gen + 1, 'APPLIED')
+        at_apply = self.frontier(BIG, pages)
+        status = b.wait(seq)
+        after = self.frontier(BIG, pages)
+        self.assertLess(at_apply, pages, 'the downgrade did not land during the write-back: the race was not exercised')
+        self.assertEqual(after, at_apply, f'{after - at_apply} pages were written after WINDOWS_GEN_APPLIED')
+        self.assertIn(status, (E_MEMORY, E_ACCESS), 'the refused write-back fails the descriptor')
+
+
+@unittest.skipUnless(os.path.exists(QEMU) and shutil.which('cc'), 'softgpu QEMU or cc missing')
+class DeviceWindows(Windows, unittest.TestCase):
+    """libsgpu in the QEMU process."""
+
+
+@unittest.skipUnless(os.path.exists(QEMU) and os.path.exists(RENDERD) and shutil.which('cc'), 'softgpu QEMU, renderd or cc missing')
+class DeviceWindowsRenderd(Windows, unittest.TestCase):
+    """The device executes in the render process, guest RAM in a shared memfd (the board's configuration)."""
+    RENDERD_PATH = RENDERD
 
 
 if __name__ == '__main__':
