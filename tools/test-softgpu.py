@@ -245,7 +245,15 @@ class Windows(unittest.TestCase):
         quiesce = glue[glue.index('static int gpu_quiesce'):]
         self.assertLess(quiesce.index('softgpu_close(c)'), quiesce.index('ADRENO_S_ADOPTED'))
         # page 1 is EL2-mapped, never given to the guest
-        self.assertIn('el2_map_softgpu(softgpu_block(p)->page1_pa)', read_source(ROOT / 'probes/xnuboot/prepare.c'))
+        prepare_c = read_source(ROOT / 'probes/xnuboot/prepare.c')
+        self.assertIn('el2_map_softgpu(softgpu_block(p)->page1_pa)', prepare_c)
+        # ... and only after the block passed the allow-list rule, with the same refusal (-44): W5 re-audit T1
+        self.assertIn('if (!softgpu_valid(softgpu_block(p))) return -44;', prepare_c)
+        self.assertLess(prepare_c.index('softgpu_valid(softgpu_block(p))) return -44'), prepare_c.index('el2_map_softgpu('))
+        # a device that never confirmed the hand-back is recorded, with the step's error and the unconfirmed count: T3
+        close = glue[glue.index('static void softgpu_close'):glue.index('/* The INTID the forwarded interrupt')]
+        self.assertIn('int e=softgpu_close_step(&softgpu_mon_hw,&SGS(c));', close)
+        self.assertIn('if(e) record(c,EV_MAP_FAILED,0,0x53475043,(uint64_t)(int64_t)e,SGS(c).mon.unconfirmed);', close)
         self.assertNotIn('page1_pa', read_source(ROOT / 'probes/xnuboot/stage2.c'))
         # the unsupported combination is a build error
         main = read_source(ROOT / 'probes/xnuboot.c')
