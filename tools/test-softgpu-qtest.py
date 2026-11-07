@@ -210,9 +210,9 @@ def cuts(const_ro=False):
 class Windows:
     """The window rules against the real device model; RENDERD_PATH selects the backend (None: libsgpu in the QEMU process)."""
     RENDERD_PATH = None
-    # per-test device properties (renderd runs): renderd never answers its 2nd window table, the kill of it is reported late
+    # per-test device properties (renderd runs): renderd never answers its 3rd window table, the kill of it is reported late
     DEVICE_EXTRA = {'test_unconfirmed_table_withholds_applied':
-                    ',renderd-test-hang-windows=2,renderd-reap-ms=300,renderd-test-reap-delay-ms=1500'}
+                    ',renderd-test-hang-windows=3,renderd-reap-ms=300,renderd-test-reap-delay-ms=1500'}
 
     @classmethod
     def setUpClass(cls):
@@ -381,7 +381,8 @@ class Windows:
         b, _ = self.bring_up(cuts())
         before = q.readl(P1 + 0x18)
         self.assertEqual(before, b.mon.gen)
-        # the hand-back zero table is renderd's 2nd: it hangs, is killed after the 2 s control timeout and is not reaped within 300 ms
+        # the hand-back zero table is renderd's 3rd (the device sends the empty table once at start): it hangs, is killed
+        # after the 2 s control timeout and is not reaped within 300 ms
         self.assertEqual(lib.softgpu_mon_close(ctypes.byref(b.ops), ctypes.byref(b.mon)), E_APPLIED)
         self.assertEqual(q.readl(P1 + 0x18), before, 'APPLIED moved although the old render process may still be running')
         self.assertEqual(b.mon.unconfirmed, 1)
